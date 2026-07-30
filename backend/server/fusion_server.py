@@ -491,7 +491,6 @@ class FusionServerHandler:
         cors.add(app.router.add_route("GET", "/concantNum", self.get_concant_num_handler))
         # TODO
         cors.add(app.router.add_route("GET", "/printerStart", self.get_printer_start_handler))
-        # cors.add(app.router.add_route("GET", "/fileInfoCompare", self.get_file_info_compare_handler))
         cors.add(app.router.add_route("GET", "/excelDataInfo", self.get_excel_data_handler))
         cors.add(app.router.add_route("GET", "/newProject", self.get_new_project_handler))
 
