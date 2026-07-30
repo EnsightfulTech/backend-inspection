@@ -18,8 +18,8 @@ from icecream import ic
 FLIP_LR = 0
 
 CAM_SN_DICT = {
-    "left": "G2GM250B601",
-    "right": "G2GM250B602"
+    "left": "M2GM250B673",
+    "right": "M2GM250B674"
 }
 
 if FLIP_LR:
