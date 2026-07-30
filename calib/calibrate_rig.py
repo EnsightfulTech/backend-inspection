@@ -1,0 +1,494 @@
+"""
+calibrate_rig.py — joint calibration of the dual-camera gantry inspection rig.
+
+Solves, in ONE global bundle adjustment pooled over multiple capture passes:
+  * the left-right camera extrinsic  T_lr  (right-cam -> left-cam), shared by all stops
+  * every stop's trajectory pose      T_s   (stop-s left-cam -> reference frame)
+with the reference stop fixed as identity (the common frame / gauge).
+
+It then fits each pose DOF as a smooth pose(x) curve vs rail position, plots the
+sag profile, evaluates the model at the operational stops, and writes extrinsics
+in the exact pickle format the inspection runtime
+(`algorithms/calib_concant.py::combine_frames_extrinsic`) consumes:
+    left_right_ext.pkl : single 4x4  (right -> left)
+    cam_traj_ext.pkl   : {stop_name: 4x4}  (that stop's left-cam -> reference)
+
+Why this replaces the old tooling
+---------------------------------
+`optimize.py::generate_pkl_by_using_oneRT` propagated a single constant step
+transform (assumes every inter-stop move is identical); the rail sags in mid-span
+so that accumulates error. Here every stop is a free pose tied together by
+loop-closure markers and solved jointly, and the sag is modeled explicitly.
+
+The bundle-adjustment core (`bundle_adjust`) is pure numpy/scipy and imports no
+camera/open3d code, so it can be unit-tested on synthetic data. The camera-stack
+imports (MyPCD, CCT_extract) are done lazily inside `load_observations`.
+
+Data layout expected (pass-major):
+    calib_root/
+      pass_00/ stop_00/{left,right}/{Image.png,PointCloud.ply}
+               stop_01/...
+      pass_01/ stop_00/...        (boards re-posed between passes)
+      ...
+"""
+
+import argparse
+import json
+import os
+import pickle
+import sys
+from collections import defaultdict, namedtuple
+from pathlib import Path
+
+# make the repo root importable whether run as `python calib/calibrate_rig.py`
+# or `python -m calib.calibrate_rig` (so `algorithms.*` / `calib.*` resolve).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import numpy as np
+from scipy.optimize import least_squares
+from scipy.spatial.transform import Rotation
+
+from calib import rig_geometry as g
+
+# one detected marker lifted to 3D in its own camera frame
+Obs = namedtuple("Obs", ["pass_id", "stop", "cam", "marker_id", "xyz"])
+
+
+def log(msg):
+    print(f"[calibrate_rig] {msg}", flush=True)
+
+
+# ======================================================================== #
+#  I/O layer  (lazy backend imports live here)
+# ======================================================================== #
+def load_observations(calib_root, cct_n=12, cct_color="white"):
+    """
+    Walk the pass-major tree, detect CCT markers in every image, lift each to a
+    3D point in that camera's own point cloud. Returns (obs_list, stop_names).
+
+    Requires the backend-inspection `algorithms` package (open3d, cv2, CCTDecoder)
+    to be importable — added to sys.path here, not at module import time.
+    """
+    from algorithms.my_pcd import MyPCD                     # noqa: E402
+    from algorithms.CCTDecoder.cct_decode import CCT_extract  # noqa: E402
+
+    calib_root = Path(calib_root)
+    obs_list = []
+    stop_names = set()
+
+    pass_dirs = sorted(d for d in calib_root.iterdir() if d.is_dir())
+    if not pass_dirs:
+        raise FileNotFoundError(f"No pass_* folders under {calib_root}")
+
+    for pass_dir in pass_dirs:
+        pass_id = pass_dir.name
+        stop_dirs = sorted(d for d in pass_dir.iterdir() if d.is_dir())
+        for stop_dir in stop_dirs:
+            stop = stop_dir.name
+            stop_names.add(stop)
+            for cam in ("left", "right"):
+                cam_dir = stop_dir / cam
+                if not (cam_dir / "Image.png").exists():
+                    log(f"  skip missing {cam_dir}")
+                    continue
+                frame = MyPCD(cam_dir)
+                cct, _ = CCT_extract(frame.image, cct_n, color=cct_color)
+                n_lifted = 0
+                for mid, (px, py) in cct.items():
+                    xyz = frame.get_3dcoord_bilinear(float(px), float(py))
+                    if xyz is None:
+                        continue
+                    obs_list.append(
+                        Obs(pass_id, stop, "L" if cam == "left" else "R",
+                            int(mid), np.asarray(xyz, dtype=float)))
+                    n_lifted += 1
+                log(f"  {pass_id}/{stop}/{cam}: {len(cct)} CCT, {n_lifted} lifted to 3D")
+
+    return obs_list, sorted(stop_names)
+
+
+# ======================================================================== #
+#  Initialization (closed-form Umeyama)
+# ======================================================================== #
+def _common(a_map, b_map):
+    """Given two {id: xyz} dicts, return matched (src_ids, A(N,3), B(N,3))."""
+    ids = sorted(set(a_map) & set(b_map))
+    if not ids:
+        return ids, np.empty((0, 3)), np.empty((0, 3))
+    A = np.array([a_map[i] for i in ids])
+    B = np.array([b_map[i] for i in ids])
+    return ids, A, B
+
+
+def _index_by(obs_list):
+    """Nested dict: [pass_id][stop][cam] -> {marker_id: xyz}."""
+    idx = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
+    for o in obs_list:
+        idx[o.pass_id][o.stop][o.cam][o.marker_id] = o.xyz
+    return idx
+
+
+def init_lr(obs_list):
+    """Init T_lr (right->left) by pooling all same-stop both-camera correspondences."""
+    idx = _index_by(obs_list)
+    R_pts, L_pts = [], []
+    for pid, stops in idx.items():
+        for stop, cams in stops.items():
+            if "L" in cams and "R" in cams:
+                _, Lc, Rc = _common(cams["L"], cams["R"])
+                if len(Lc):
+                    L_pts.append(Lc)
+                    R_pts.append(Rc)
+    if not R_pts:
+        log("  WARNING: no same-stop both-camera markers -> T_lr init = identity")
+        return np.eye(4)
+    R_all = np.vstack(R_pts)
+    L_all = np.vstack(L_pts)
+    T = g.umeyama(R_all, L_all)          # right -> left
+    log(f"  T_lr init from {len(R_all)} L/R pairs, rmse={g.rigid_rmse(T, R_all, L_all):.3f}")
+    return T
+
+
+def init_stops(obs_list, stop_names, ref_stop):
+    """
+    Init each stop pose (left-cam -> reference) by chaining pairwise Umeyama between
+    consecutive stops' left cameras (pooled over passes), then rebasing to ref_stop.
+    """
+    idx = _index_by(obs_list)
+
+    def pooled_left(stop):
+        """{id: xyz} pooled across passes for a stop's left cam (last pass wins on dup)."""
+        out = {}
+        for pid, stops in idx.items():
+            if stop in stops and "L" in stops[stop]:
+                out.update(stops[stop]["L"])
+        return out
+
+    T_abs = {stop_names[0]: np.eye(4)}
+    for i in range(1, len(stop_names)):
+        a, b = stop_names[i - 1], stop_names[i]
+        # pair per pass so a marker's two 3D coords come from the SAME board pose
+        Bp, Ap = [], []
+        for pid, stops in idx.items():
+            if a in stops and b in stops and "L" in stops[a] and "L" in stops[b]:
+                _, Ac, Bc = _common(stops[a]["L"], stops[b]["L"])
+                if len(Ac):
+                    Ap.append(Ac)
+                    Bp.append(Bc)
+        if Bp:
+            rel = g.umeyama(np.vstack(Bp), np.vstack(Ap))   # b -> a
+            T_abs[b] = T_abs[a] @ rel
+        else:
+            log(f"  WARNING: no shared left markers between {a} and {b} -> chain gap, using identity step")
+            T_abs[b] = T_abs[a].copy()
+
+    base = g.invert(T_abs[ref_stop])
+    return {s: base @ T_abs[s] for s in stop_names}
+
+
+# ======================================================================== #
+#  Bundle adjustment core  (pure numpy/scipy)
+# ======================================================================== #
+def _build_groups(obs_list):
+    """(pass_id, marker_id) -> list of (stop, cam, xyz); keep multiview (>=2) only."""
+    groups = defaultdict(list)
+    for o in obs_list:
+        groups[(o.pass_id, o.marker_id)].append((o.stop, o.cam, o.xyz))
+    return {k: v for k, v in groups.items() if len(v) >= 2}
+
+
+def _map_point(xyz, cam, T_s, T_lr):
+    if cam == "L":
+        return T_s[:3, :3] @ xyz + T_s[:3, 3]
+    y = T_lr[:3, :3] @ xyz + T_lr[:3, 3]        # right -> left
+    return T_s[:3, :3] @ y + T_s[:3, 3]         # left -> reference
+
+
+def bundle_adjust(obs_list, stop_names, ref_stop, T_lr0=None, T_stops0=None,
+                  verbose=True):
+    """
+    Joint solve of T_lr and all stop poses. Global marker positions are profiled
+    out analytically (residual = each mapped observation minus its group mean),
+    so the only unknowns are the poses. Returns a result dict.
+    """
+    stops = list(stop_names)
+    if ref_stop not in stops:
+        raise ValueError(f"reference stop {ref_stop!r} not among {stops}")
+    free_stops = [s for s in stops if s != ref_stop]
+
+    groups = _build_groups(obs_list)
+    if not groups:
+        raise RuntimeError("No multiview marker groups — cannot calibrate.")
+
+    if T_lr0 is None:
+        T_lr0 = init_lr(obs_list)
+    if T_stops0 is None:
+        T_stops0 = init_stops(obs_list, stops, ref_stop)
+
+    # pack parameters: [T_lr(6), free_stop_0(6), free_stop_1(6), ...]
+    p0 = np.concatenate([g.mat_to_vec(T_lr0)] +
+                        [g.mat_to_vec(T_stops0[s]) for s in free_stops])
+
+    def unpack(p):
+        T_lr = g.vec_to_mat(p[0:6])
+        Ts = {ref_stop: np.eye(4)}
+        for i, s in enumerate(free_stops):
+            Ts[s] = g.vec_to_mat(p[6 + 6 * i: 12 + 6 * i])
+        return T_lr, Ts
+
+    # precompute group observation tuples for speed
+    group_obs = list(groups.values())
+
+    def residuals(p):
+        T_lr, Ts = unpack(p)
+        chunks = []
+        for obs in group_obs:
+            mapped = np.array([_map_point(xyz, cam, Ts[s], T_lr)
+                               for (s, cam, xyz) in obs])
+            chunks.append((mapped - mapped.mean(axis=0)).ravel())
+        return np.concatenate(chunks)
+
+    r0 = residuals(p0)
+    log(f"  BA: {len(groups)} groups, {sum(len(v) for v in group_obs)} obs, "
+        f"{len(p0)} params, {len(r0)} residuals; init RMS={_rms(r0):.3f} mm")
+
+    sol = least_squares(residuals, p0, method="trf",
+                        xtol=1e-12, ftol=1e-12, gtol=1e-12,
+                        verbose=2 if verbose else 0)
+    T_lr, Ts = unpack(sol.x)
+    final = residuals(sol.x)
+    log(f"  BA done: final RMS={_rms(final):.3f} mm  (scipy status {sol.status})")
+
+    stats = residual_report(obs_list, stops, ref_stop, T_lr, Ts)
+    return {
+        "T_lr": T_lr,
+        "T_stops": Ts,
+        "stop_names": stops,
+        "reference_stop": ref_stop,
+        "final_rms_mm": _rms(final),
+        "stats": stats,
+    }
+
+
+def _rms(vec):
+    vec = np.asarray(vec).reshape(-1, 3)
+    return float(np.sqrt(np.mean(np.sum(vec ** 2, axis=1)))) if len(vec) else 0.0
+
+
+def residual_report(obs_list, stop_names, ref_stop, T_lr, Ts):
+    """Per-stop / per-pass / L-R residual RMS (mm) after a solve."""
+    groups = _build_groups(obs_list)
+    per_stop = defaultdict(list)
+    per_pass = defaultdict(list)
+    lr_res = []           # residual of right obs at stops that also have left of same id
+    all_res = []
+    for (pid, mid), obs in groups.items():
+        mapped = np.array([_map_point(xyz, cam, Ts[s], T_lr) for (s, cam, xyz) in obs])
+        mean = mapped.mean(axis=0)
+        has_L = any(c == "L" for (_, c, _) in obs)
+        has_R = any(c == "R" for (_, c, _) in obs)
+        for (s, cam, _), m in zip(obs, mapped):
+            e = np.linalg.norm(m - mean)
+            per_stop[s].append(e)
+            per_pass[pid].append(e)
+            all_res.append(e)
+            if cam == "R" and has_L and has_R:
+                lr_res.append(e)
+
+    def summ(d):
+        return {k: {"rms_mm": float(np.sqrt(np.mean(np.square(v)))), "n": len(v)}
+                for k, v in sorted(d.items())}
+
+    return {
+        "overall_rms_mm": float(np.sqrt(np.mean(np.square(all_res)))) if all_res else 0.0,
+        "n_residual_points": len(all_res),
+        "per_stop": summ(per_stop),
+        "per_pass": summ(per_pass),
+        "lr_rms_mm": float(np.sqrt(np.mean(np.square(lr_res)))) if lr_res else None,
+        "n_groups": len(groups),
+    }
+
+
+# ======================================================================== #
+#  pose(x) sag model + output
+# ======================================================================== #
+def fit_and_eval_posex(result, stop_x, operational_stops, model_kind="poly",
+                       poly_deg=3, crosscheck_tol_mm=2.0, crosscheck_tol_deg=0.05):
+    """
+    Fit pose(x) over captured stops, evaluate at operational stops.
+    Returns (model, traj_ext, crosscheck) where traj_ext = {op_name: 4x4}.
+    """
+    stops = result["stop_names"]
+    xs = np.array([stop_x[s] for s in stops], dtype=float)
+    poses = [result["T_stops"][s] for s in stops]
+    model = g.fit_pose_x(xs, poses, kind=model_kind, poly_deg=poly_deg)
+
+    traj_ext = {}
+    for op_name, x_op in operational_stops.items():
+        traj_ext[op_name] = model.eval_pose(float(x_op))
+
+    # cross-check: where an operational x coincides with a captured stop, compare
+    crosscheck = []
+    for op_name, x_op in operational_stops.items():
+        near = [s for s in stops if abs(stop_x[s] - float(x_op)) < 1e-6]
+        if near:
+            s = near[0]
+            T_direct = result["T_stops"][s]
+            T_model = traj_ext[op_name]
+            dt = np.linalg.norm(T_direct[:3, 3] - T_model[:3, 3])
+            dR = np.degrees(np.linalg.norm(
+                Rotation.from_matrix(T_direct[:3, :3] @ T_model[:3, :3].T).as_rotvec()))
+            ok = (dt <= crosscheck_tol_mm) and (dR <= crosscheck_tol_deg)
+            crosscheck.append({"op": op_name, "stop": s, "dt_mm": dt, "dR_deg": dR, "ok": ok})
+            if not ok:
+                log(f"  CROSSCHECK WARN {op_name}~{s}: dt={dt:.2f}mm dR={dR:.3f}deg "
+                    f"exceeds tol -> possible model bias / bad stop")
+    return model, traj_ext, crosscheck
+
+
+def plot_sag(result, stop_x, out_png):
+    """Sag plot: 6 DOF vs rail x with fitted curve. Lazy matplotlib import."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        log("  matplotlib not available -> skipping sag_curve.png "
+            "(run in the beta3d/reborn env to get the plot)")
+        return None
+
+    stops = result["stop_names"]
+    xs = np.array([stop_x[s] for s in stops], dtype=float)
+    vecs = np.array([g.mat_to_vec(result["T_stops"][s]) for s in stops])
+    model = g.fit_pose_x(xs, [result["T_stops"][s] for s in stops])
+    xg = np.linspace(xs.min(), xs.max(), 200)
+    vg = model.eval_vec(xg)
+
+    labels = ["rotvec_x (rad)", "rotvec_y (rad)", "rotvec_z (rad)",
+              "t_x (mm)", "t_y (mm)", "t_z (mm)"]
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+    for dof, ax in enumerate(axes.ravel()):
+        ax.plot(xg, vg[:, dof], "-", color="#ff8800", lw=2, label="pose(x) fit")
+        ax.plot(xs, vecs[:, dof], "o", color="#0066cc", label="BA per-stop")
+        ax.set_title(labels[dof])
+        ax.set_xlabel("rail position x (mm)")
+        ax.grid(alpha=0.3)
+        if dof == 0:
+            ax.legend(fontsize=8)
+    fig.suptitle("Rig pose vs rail position (sag profile)", fontsize=14)
+    fig.tight_layout()
+    fig.savefig(out_png, dpi=130)
+    plt.close(fig)
+    log(f"  wrote {out_png}")
+    return out_png
+
+
+def _jsonable(o):
+    if isinstance(o, np.ndarray):
+        return o.tolist()
+    if isinstance(o, dict):
+        return {k: _jsonable(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_jsonable(v) for v in o]
+    if isinstance(o, (np.floating, np.integer)):
+        return o.item()
+    return o
+
+
+def write_outputs(result, traj_ext, crosscheck, out_dir):
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    with open(out_dir / "left_right_ext.pkl", "wb") as f:
+        pickle.dump(result["T_lr"], f)
+    with open(out_dir / "cam_traj_ext.pkl", "wb") as f:
+        pickle.dump(traj_ext, f)
+
+    report = {
+        "reference_stop": result["reference_stop"],
+        "final_rms_mm": result["final_rms_mm"],
+        "stats": result["stats"],
+        "T_lr": result["T_lr"],
+        "captured_stop_poses": {s: result["T_stops"][s] for s in result["stop_names"]},
+        "operational_traj_ext": traj_ext,
+        "crosscheck": crosscheck,
+    }
+    with open(out_dir / "calib_report.json", "w", encoding="utf-8") as f:
+        json.dump(_jsonable(report), f, indent=2, ensure_ascii=False)
+    log(f"  wrote left_right_ext.pkl, cam_traj_ext.pkl, calib_report.json to {out_dir}")
+
+
+# ======================================================================== #
+#  CLI
+# ======================================================================== #
+def run(config):
+    calib_root = config["calib_root"]
+    out_dir = config.get("out_dir", str(Path(calib_root) / "calib_out"))
+    ref_stop = config.get("reference_stop")
+    cct_n = config.get("cct_n", 12)
+
+    log(f"loading observations from {calib_root} ...")
+    obs_list, stop_names = load_observations(calib_root, cct_n=cct_n)
+    log(f"stops found: {stop_names}")
+    if ref_stop is None:
+        ref_stop = stop_names[0]
+        log(f"reference_stop defaulting to {ref_stop}")
+
+    result = bundle_adjust(obs_list, stop_names, ref_stop)
+    log(f"overall RMS {result['stats']['overall_rms_mm']:.3f} mm, "
+        f"L-R RMS {result['stats']['lr_rms_mm']}")
+
+    # rail positions per captured stop (fallback to ordinal with a warning)
+    stop_x = config.get("stop_x")
+    if not stop_x:
+        stop_x = {s: float(i) for i, s in enumerate(stop_names)}
+        log("WARNING: no stop_x given -> using ordinal positions; sag axis is in "
+            "'stop units', not mm. Provide stop_x for a physical sag curve.")
+    stop_x = {k: float(v) for k, v in stop_x.items()}
+
+    operational = config.get("operational_stops")
+    if not operational:
+        operational = {s: stop_x[s] for s in stop_names}
+        log("no operational_stops given -> emitting captured stops as-is")
+    operational = {k: float(v) for k, v in operational.items()}
+
+    model_cfg = config.get("model", {})
+    model, traj_ext, crosscheck = fit_and_eval_posex(
+        result, stop_x, operational,
+        model_kind=model_cfg.get("kind", "poly"),
+        poly_deg=model_cfg.get("poly_deg", 3),
+        crosscheck_tol_mm=config.get("crosscheck_tol_mm", 2.0),
+        crosscheck_tol_deg=config.get("crosscheck_tol_deg", 0.05))
+
+    plot_sag(result, stop_x, str(Path(out_dir) / "sag_curve.png"))
+    write_outputs(result, traj_ext, crosscheck, out_dir)
+    log("done.")
+    return result, traj_ext
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Joint L-R + trajectory rig calibration.")
+    ap.add_argument("--config", help="JSON config file", default=None)
+    ap.add_argument("--calib-root", help="pass-major capture root (overrides config)")
+    ap.add_argument("--out-dir", help="output directory (overrides config)")
+    ap.add_argument("--reference-stop", help="stop name to fix as reference")
+    args = ap.parse_args()
+
+    config = {}
+    if args.config:
+        with open(args.config, encoding="utf-8") as f:
+            config = json.load(f)
+    if args.calib_root:
+        config["calib_root"] = args.calib_root
+    if args.out_dir:
+        config["out_dir"] = args.out_dir
+    if args.reference_stop:
+        config["reference_stop"] = args.reference_stop
+    if "calib_root" not in config:
+        ap.error("calib_root required (via --calib-root or config)")
+
+    run(config)
+
+
+if __name__ == "__main__":
+    main()
