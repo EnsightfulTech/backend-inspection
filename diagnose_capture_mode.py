@@ -51,15 +51,21 @@ def dump_one(sn, device):
 
     mode_name = MODE_NAMES.get(opt.capture_mode, f"<unknown:{opt.capture_mode}>")
     print(f"  capture_mode              = {mode_name}")
-    print(f"  scan_times                = {opt.scan_times}")
-    print(f"  exposure_time_3d          = {opt.exposure_time_3d}")
-    print(f"  line_scanner_scan_time_ms = {opt.line_scanner_scan_time_ms}")
-    print(f"  line_scanner_exposure_us  = {opt.line_scanner_exposure_time_us}")
-    print(f"  line_scanner_min_distance = {opt.line_scanner_min_distance}")
-    print(f"  line_scanner_max_distance = {opt.line_scanner_max_distance}")
-    print(f"  line_scanner_confidence   = {opt.line_scanner_confidence}")
-    print(f"  correspond2d              = {opt.correspond2d}")
-    print(f"  trigger_mode              = {opt.trigger_mode}")
+
+    NA = "<not available in this PyRVC build>"
+    fields = [
+        "scan_times", "exposure_time_2d", "gain_2d", "gamma_2d",
+        "exposure_time_3d", "gain_3d", "gamma_3d",
+        "light_contrast_threshold", "projector_brightness",
+        "line_scanner_scan_time_ms", "line_scanner_exposure_time_us",
+        "line_scanner_min_distance", "line_scanner_max_distance",
+        "line_scanner_brightness_threshold", "line_scanner_laser_position",
+        "line_scanner_confidence", "correspond2d", "trigger_mode",
+        "use_auto_noise_removal", "confidence_threshold",
+        "pointcloud_completion",
+    ]
+    for f in fields:
+        print(f"  {f:<26s} = {getattr(opt, f, NA)}")
 
     x.Close()
     RVC.X2.Destroy(x)
