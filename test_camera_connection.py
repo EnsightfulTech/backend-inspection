@@ -83,7 +83,8 @@ def main():
 
             if not x.Capture(cap_opt):
                 print(f"[FAIL] {role} ({sn}): capture failed. "
-                      f"{RVC.GetLastErrorMessage()}")
+                      f"code={RVC.GetLastError()} msg={RVC.GetLastErrorMessage()} "
+                      f"-- look up 'code' in RVCSDK/docs/ErrorCode.csv")
                 x.Close(); RVC.X2.Destroy(x)
                 return 1
 
