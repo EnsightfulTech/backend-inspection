@@ -58,15 +58,21 @@ def main():
         print(f"[ OK ] Both expected cameras present: {EXPECTED_SN}")
 
         # 4) Open each, capture one frame, save image + point cloud.
+        # Each camera is independent -- one failing should not stop the other
+        # from being tested, so failures are logged and looped past rather
+        # than aborting the whole script.
+        results = {}
         for role, sn in zip(("left", "right"), EXPECTED_SN):
             x = RVC.X2.Create(seen[sn])
             if not x.IsValid():
                 print(f"[FAIL] {role} ({sn}): device handle not valid.")
-                return 1
+                results[role] = False
+                continue
             if not (x.Open() and x.IsOpen()):
                 print(f"[FAIL] {role} ({sn}): failed to open.")
                 RVC.X2.Destroy(x)
-                return 1
+                results[role] = False
+                continue
             print(f"[ OK ] {role} ({sn}): opened.")
 
             # A bare x.Capture() (no args) does NOT reliably use whatever
@@ -79,14 +85,16 @@ def main():
                 print(f"[FAIL] {role} ({sn}): LoadCaptureOptionParameters failed. "
                       f"{RVC.GetLastErrorMessage()}")
                 x.Close(); RVC.X2.Destroy(x)
-                return 1
+                results[role] = False
+                continue
 
             if not x.Capture(cap_opt):
                 print(f"[FAIL] {role} ({sn}): capture failed. "
                       f"code={RVC.GetLastError()} msg={RVC.GetLastErrorMessage()} "
                       f"-- look up 'code' in RVCSDK/docs/ErrorCode.csv")
                 x.Close(); RVC.X2.Destroy(x)
-                return 1
+                results[role] = False
+                continue
 
             out = SAVE_DIR / role
             out.mkdir(parents=True, exist_ok=True)
@@ -97,15 +105,22 @@ def main():
             pm.SaveWithImage(str(out / "PointCloud.ply"), img,
                              RVC.PointMapUnitEnum.Meter)
             print(f"[ OK ] {role} ({sn}): captured {w}x{h} -> {out}")
+            results[role] = True
 
             x.Close()
             RVC.X2.Destroy(x)
 
-        print("\n[DONE] Both cameras enumerated, opened, and captured. "
-              f"See '{SAVE_DIR}\\left' and '{SAVE_DIR}\\right'.")
-        print("       Open the two Image.png to confirm left/right are not "
-              "swapped before trusting CAM_SN_DICT.")
-        return 0
+        if all(results.values()):
+            print("\n[DONE] Both cameras enumerated, opened, and captured. "
+                  f"See '{SAVE_DIR}\\left' and '{SAVE_DIR}\\right'.")
+            print("       Open the two Image.png to confirm left/right are not "
+                  "swapped before trusting CAM_SN_DICT.")
+            return 0
+        else:
+            failed = [role for role, ok in results.items() if not ok]
+            print(f"\n[SUMMARY] failed: {failed}  ok: "
+                  f"{[r for r, ok in results.items() if ok]}")
+            return 1
     finally:
         RVC.SystemShutdown()
 
