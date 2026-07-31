@@ -69,7 +69,19 @@ def main():
                 return 1
             print(f"[ OK ] {role} ({sn}): opened.")
 
-            if not x.Capture():
+            # A bare x.Capture() (no args) does NOT reliably use whatever
+            # RVCManager has configured (observed: LoadCaptureOptionParameters()
+            # reports CaptureMode_Ultra, but bare Capture() still ran as
+            # CaptureMode_Normal and failed). Explicitly load and pass the
+            # options back in so the mode we inspect is the mode we use.
+            ret_opt, cap_opt = x.LoadCaptureOptionParameters()
+            if not ret_opt:
+                print(f"[FAIL] {role} ({sn}): LoadCaptureOptionParameters failed. "
+                      f"{RVC.GetLastErrorMessage()}")
+                x.Close(); RVC.X2.Destroy(x)
+                return 1
+
+            if not x.Capture(cap_opt):
                 print(f"[FAIL] {role} ({sn}): capture failed. "
                       f"{RVC.GetLastErrorMessage()}")
                 x.Close(); RVC.X2.Destroy(x)
