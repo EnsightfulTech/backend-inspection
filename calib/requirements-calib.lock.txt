@@ -1,8 +1,10 @@
 # LOCK FILE — exact versions verified on the sandbox (Python 3.10 x64, 2026-07-31).
-# Deploy to the rig:  conda create -n wallinspect python=3.10 -y && conda activate wallinspect
+# Deploy to the rig:  conda create -n wallInspect python=3.10 -y && conda activate wallInspect
 #                     pip install -r requirements-calib.lock.txt
-# Then install PyRVC separately (NOT in this lock; see CALIBRATION.md):
-#                     pip install PyRVC==1.14.0   # the working binding in the wallinspect env
+# Then install PyRVC separately (NOT in this lock; see CALIBRATION.md's "PyRVC — version note"):
+#                     pip install <pyrvc wheel>
+# NOTE: the PyPI PyRVC==1.14.0 imports but capture fails with error 215 on the rig; a 1.15.0
+# wheel built from the on-disk SDK source is the current candidate. Verification pending.
 annotated-types==0.8.0
 asttokens==3.0.2
 attrs==26.1.0

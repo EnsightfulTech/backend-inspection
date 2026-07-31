@@ -44,33 +44,85 @@ Camera I/O reuses `algorithms.my_pcd.MyPCD`, `algorithms.CCTDecoder.cct_decode.C
 
 ## Environment
 
-**Use the existing `wallinspect` conda env** — the backend-inspection runtime (Python 3.10.20 x64).
-It already has every dependency these scripts need, including a working **PyRVC 1.14.0**
-(`PyRVC.cp310-win_amd64.pyd`); the calibration test passes in it as-is, nothing to add.
+**Use the existing `wallInspect` conda env** — the backend-inspection runtime (Python 3.10.20 x64).
+It already has every dependency these scripts need, including a **PyRVC** binding; the calibration
+test passes in it as-is, nothing to add.
 
 The env is pinned to **Python 3.10 x64** on purpose: the PyRVC `.pyd` is ABI-locked to one Python
 version and `open3d` needs `numpy < 2`. Do **not** use base 3.13.
 
 ```bash
-# preferred: just use the existing wallinspect env (has everything, incl. PyRVC 1.14.0)
-conda activate wallinspect
+# preferred: just use the existing wallInspect env (has everything, incl. PyRVC)
+conda activate wallInspect
 # to recreate elsewhere from scratch:
-conda create -n wallinspect python=3.10 -y && conda activate wallinspect
+conda create -n wallInspect python=3.10 -y && conda activate wallInspect
 pip install -r calib/requirements-calib.lock.txt   # exact versions verified 2026-07-31
-pip install PyRVC==1.14.0                           # the working binding (see note below)
+pip install <pyrvc wheel>                           # see the PyRVC version note below
 ```
 
 `calib/requirements-calib.lock.txt` is the frozen calib subset (73 packages); the full backend
-`requirements.txt` is a superset, so an existing `wallinspect` needs nothing added. Also required
+`requirements.txt` is a superset, so an existing `wallInspect` needs nothing added. Also required
 (not pip packages): this **backend-inspection checkout** (scripts import `algorithms.*` /
 `backend.*`) and the **RVC SDK runtime** (`C:\Program Files\RVBUST`) for real capture.
 
-### PyRVC — version note
-- The working, installed binding is **PyRVC 1.14.0** (`site-packages\PyRVC.cp310-win_amd64.pyd`),
-  installed via `pip install PyRVC==1.14.0`. **Keep it.**
-- The SDK **source** on disk is 1.15.0 but is **not prebuilt** — building it needs a full C++
-  toolchain (CMake + MSVC + `RVC_ROOT` set + a writable build dir) and is unnecessary since 1.14.0
-  imports and works. Left as-is by decision (2026-07-31).
+### PyRVC — version note (updated 2026-08-01)
+
+**1.14.0 (PyPI) imports fine but has an unresolved capture problem.** `pip install PyRVC==1.14.0`
+was the original recommendation because it imports and the DLLs load. During rig bring-up, however,
+`X2.Capture()` fails on camera `M2GM250B673` with **error 215 = 相机拍照超时 / capture timeout**
+(codes are in `RVCSDK\docs\ErrorCode.csv`), while **RVCManager captures the same camera in 3–4 s**
+with the same stored settings. Ruled out along the way: capture mode (fails identically on
+SwingLineScan / Normal / Ultra), HDR bracketing (off on the failing camera), device-occupied
+(RVCManager fully closed — otherwise the camera won't even open), DLL path conflicts (only one
+`RVC.dll`/`RVC_C.dll` on `PATH`), and slow-capture-vs-timeout (3–4 s is well within any timeout).
+Also note 1.14.0 does **not** expose `trigger_mode` or `line_scanner_confidence` on
+`X2_CaptureOptions`, so the trigger configuration — the leading remaining suspect — cannot be
+inspected from Python at all on that build.
+
+**1.15.0 has been built from the on-disk SDK source** (supplier's recommendation) and is installed
+in `wallInspect` on the sandbox. Prebuilt wheel:
+
+```
+C:\Users\yuany\rvc_build\dist\pyrvc-1.15.0-cp310-cp310-win_amd64.whl   (49.3 MB)
+```
+
+⚠️ **Not yet verified against the hardware** — as of 2026-08-01 it is unknown whether 1.15.0 fixes
+error 215. Re-run `diagnose_capture_mode.py` (does `trigger_mode` appear now?) and
+`test_camera_connection.py` before trusting it, and update this note with the result.
+
+#### Building the 1.15.0 wheel (only needed once, on a machine with MSVC)
+
+The wheel is portable: **build once, copy the `.whl` to the rig PC and `pip install` it there** —
+no Visual Studio / CMake / `RVC_ROOT` / SDK source needed on the target. The only requirements on
+the target are Python **3.10 x64** (the `cp310` tag) and a VC++ 2015–2022 x64 redistributable
+(install that only if `import PyRVC` fails with `DLL load failed`). The wheel bundles the whole RVC
+runtime (~49 MB of DLLs) into site-packages, but the target still needs the **full RVC SDK
+installed separately** for GigE drivers / RVCManager / firmware.
+
+```bash
+# 1. copy the SDK out of Program Files — setup.py copies runtime DLLs into its own
+#    directory first, which fails with PermissionError under Program Files
+xcopy /E /I "C:\Program Files\RVBUST\RVC\RVCSDK" "C:\Users\yuany\rvc_build\RVCSDK"
+# 2. CMakeLists.txt reads RVC_ROOT for include/ and lib/
+set RVC_ROOT=C:\Users\yuany\rvc_build\RVCSDK
+# 3. CMake 4.x removed compatibility with the SDK's cmake_minimum_required(VERSION 2.8.12)
+set CMAKE_POLICY_VERSION_MINIMUM=3.5
+# 4. --no-build-isolation: pip's isolated build env cannot resolve a pip-installed cmake
+#    (the launcher runs but 'No module named cmake'), even though `cmake --version` works
+cd /d C:\Users\yuany\rvc_build\RVCSDK\PyRVC
+pip wheel --no-build-isolation --no-deps -w C:\Users\yuany\rvc_build\dist .
+```
+
+Do **not** add the wheel to git — 49 MB per clone is a real cost, especially over a
+mainland-China mirror. Keep it with the deployment artifacts.
+
+#### Troubleshooting helpers (repo root, standalone — no PLC/CloudComPy)
+- `diagnose_capture_mode.py` — dumps a camera's stored `X2_CaptureOptions` (capture mode, HDR
+  brackets, line-scan params) without capturing. Fields missing from a given build print as
+  `<not available in this PyRVC build>`.
+- `test_camera_connection.py` — enumerates, opens, and captures one frame per camera. Reports the
+  numeric `GetLastError()` code (look it up in `RVCSDK\docs\ErrorCode.csv`), and tests both cameras
+  independently so one failure doesn't mask the other's result.
 
 ### What you can verify on the hardware-less sandbox
 - `pip install -r calib/requirements-calib.lock.txt` resolves cleanly (env is correct).
