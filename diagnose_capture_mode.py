@@ -57,6 +57,7 @@ def dump_one(sn, device):
         "scan_times", "exposure_time_2d", "gain_2d", "gamma_2d",
         "exposure_time_3d", "gain_3d", "gamma_3d",
         "light_contrast_threshold", "projector_brightness",
+        "hdr_exposure_times",
         "line_scanner_scan_time_ms", "line_scanner_exposure_time_us",
         "line_scanner_min_distance", "line_scanner_max_distance",
         "line_scanner_brightness_threshold", "line_scanner_laser_position",
@@ -66,6 +67,17 @@ def dump_one(sn, device):
     ]
     for f in fields:
         print(f"  {f:<26s} = {getattr(opt, f, NA)}")
+
+    hdr_n = getattr(opt, "hdr_exposure_times", 0) or 0
+    for i in range(int(hdr_n)):
+        try:
+            print(f"  hdr[{i}] exposure/gain/brightness/scan_times = "
+                  f"{opt.GetHDRExposureTimeContent(i)} / "
+                  f"{opt.GetHDRGainContent(i)} / "
+                  f"{opt.GetHDRProjectorBrightnessContent(i)} / "
+                  f"{opt.GetHDRScanTimesContent(i)}")
+        except Exception as e:
+            print(f"  hdr[{i}]: <error reading: {e}>")
 
     x.Close()
     RVC.X2.Destroy(x)
