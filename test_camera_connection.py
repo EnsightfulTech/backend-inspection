@@ -75,11 +75,12 @@ def main():
                 continue
             print(f"[ OK ] {role} ({sn}): opened.")
 
-            # A bare x.Capture() (no args) does NOT reliably use whatever
-            # RVCManager has configured (observed: LoadCaptureOptionParameters()
-            # reports CaptureMode_Ultra, but bare Capture() still ran as
-            # CaptureMode_Normal and failed). Explicitly load and pass the
-            # options back in so the mode we inspect is the mode we use.
+            # Load the camera's stored options and pass them back explicitly.
+            # Per RVC.h, bare Capture() also loads options from the camera, so
+            # this is equivalent -- but being explicit means the settings
+            # diagnose_capture_mode.py prints are provably the ones used here.
+            # (The "X2 Normal Collect Failed!" text appears even when the mode
+            # is Ultra, so that word is the collection routine, not the mode.)
             ret_opt, cap_opt = x.LoadCaptureOptionParameters()
             if not ret_opt:
                 print(f"[FAIL] {role} ({sn}): LoadCaptureOptionParameters failed. "

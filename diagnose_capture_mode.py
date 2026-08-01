@@ -33,6 +33,26 @@ for name in ("CaptureMode_Normal", "CaptureMode_Fast", "CaptureMode_Ultra",
 
 def dump_one(sn, device):
     print(f"\n=== {sn} ===")
+
+    # Every SDK example checks this BEFORE capturing. A mismatch means the
+    # camera firmware is not the version this SDK build expects -- upgrade via
+    # RVCManager. RVCManager itself can keep working while an SDK capture fails.
+    try:
+        match = device.IsFirmwareMatch()
+        print(f"  IsFirmwareMatch           = {match}"
+              f"{'' if match else '   <-- MISMATCH: upgrade firmware in RVCManager'}")
+    except Exception as e:
+        print(f"  IsFirmwareMatch           = <error: {e}>")
+
+    try:
+        _, info = device.GetDeviceInfo()
+        for attr in ("name", "sn", "type", "support_extra", "firmware_version",
+                     "cameras_serial_number", "ip"):
+            if hasattr(info, attr):
+                print(f"  info.{attr:<21s} = {getattr(info, attr)}")
+    except Exception as e:
+        print(f"  GetDeviceInfo             = <error: {e}>")
+
     x = RVC.X2.Create(device)
     if not x.IsValid():
         print("  [FAIL] device handle not valid")
