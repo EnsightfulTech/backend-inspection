@@ -35,5 +35,12 @@ TRAJ_EXT_PKL = r"Data\model_0308\cam_traj_ext.pkl"
 ROOT_FOLDER = r"D:\Inspection_Data"
 
 ############################ PLC Options ############################
-PLC_HOST = '192.168.111.3'
+# Gantry motion PLC (Modbus TCP). Found via AutoShop's 通讯设置 -> 以太网 -> 搜索,
+# which lists every PLC on the network with its IP/MAC; ping it to confirm.
+# Note AutoShop may be connected to the PLC over USB for programming — that says
+# nothing about Ethernet, which is what Modbus TCP needs. Modbus TCP also has to
+# be enabled on the PLC itself: a successful ping only proves the PLC is on the
+# network, not that port 502 answers.
+# (Was 192.168.111.3, inherited from the previous project's rig.)
+PLC_HOST = '192.168.124.88'
 PLC_PORT = 502
