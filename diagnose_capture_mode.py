@@ -14,6 +14,7 @@ Run on the rig PC:
 """
 
 import sys
+import time
 
 try:
     import PyRVC as RVC
@@ -22,6 +23,10 @@ except ImportError:
     sys.exit(1)
 
 EXPECTED_SN = ["M2GM250B673", "M2GM250B674"]
+
+# `--probe` additionally attempts a 2D-only capture and then a full 3D capture,
+# timing both. Default stays read-only (settings dump, no capture).
+PROBE = "--probe" in sys.argv
 
 MODE_NAMES = {}
 for name in ("CaptureMode_Normal", "CaptureMode_Fast", "CaptureMode_Ultra",
@@ -99,8 +104,37 @@ def dump_one(sn, device):
         except Exception as e:
             print(f"  hdr[{i}]: <error reading: {e}>")
 
+    if PROBE:
+        print("  -- probe --")
+        try:
+            print(f"  GetBandwidth              = {x.GetBandwidth()}")
+        except Exception as e:
+            print(f"  GetBandwidth              = <error: {e}>")
+
+        # 2D-only: one frame, no structured-light sequence, tiny data volume
+        # next to a full Ultra 3D capture. If 2D succeeds and 3D times out,
+        # the problem is the 3D acquisition/transfer, not the link itself.
+        _timed(lambda: x.Capture2D(RVC.CameraID_Left), "Capture2D")
+        _timed(lambda: x.Capture(opt), "Capture(3D)")
+
     x.Close()
     RVC.X2.Destroy(x)
+
+
+def _timed(fn, label):
+    """Run a capture call, reporting how long it took and the error code."""
+    t0 = time.time()
+    try:
+        ok = fn()
+    except Exception as e:
+        print(f"  {label:<26s} = <exception after {time.time()-t0:.2f}s: {e}>")
+        return
+    dt = time.time() - t0
+    if ok:
+        print(f"  {label:<26s} = OK in {dt:.2f}s")
+    else:
+        print(f"  {label:<26s} = FAILED in {dt:.2f}s  "
+              f"code={RVC.GetLastError()} msg={RVC.GetLastErrorMessage()}")
 
 
 def main():
