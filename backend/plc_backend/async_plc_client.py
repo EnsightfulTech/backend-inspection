@@ -40,6 +40,12 @@ REG_CAMERA_NUM = 906   # iCameraNum
 
 DEFAULT_MOVE_TIMEOUT_S = 60.0
 POLL_INTERVAL_S = 0.1
+# Per-request socket timeout. pyModbusTCP defaults to 30 s, which means an
+# unreachable PLC blocks startup for ~30 s per call -- the UI shell waits on the
+# backend, so that reads as a hang. The PLC is on the local rig network, where a
+# healthy request is milliseconds; failing fast and reporting it via /health is
+# far more useful than waiting.
+SOCKET_TIMEOUT_S = 3.0
 
 
 class PLC_D901():
@@ -67,8 +73,8 @@ class PLC_D905():
 
 
 class AsyncPLCClient():
-    def __init__(self, host=PLC_HOST, port=PLC_PORT):
-        self.client = ModbusClient(host=host, port=port)
+    def __init__(self, host=PLC_HOST, port=PLC_PORT, timeout=SOCKET_TIMEOUT_S):
+        self.client = ModbusClient(host=host, port=port, timeout=timeout)
         self.client.debug = True
         if not self.client.open():
             logger.error(f"PLC: failed to open Modbus connection to {host}:{port}")

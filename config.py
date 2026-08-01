@@ -29,6 +29,15 @@ CAM_EXT_PKL = r"Data\model_0308\left_right_ext.pkl"
 TRAJ_EXT_PKL = r"Data\model_0308\cam_traj_ext.pkl"
 
 
+############################ Frontend serving ############################
+# Built frontend (Vite `npm run build` output) served by aiohttp at "/", so the
+# Electron shell can load http://127.0.0.1:1337/ and everything is same-origin --
+# no dev-server proxy and no CORS in production.
+# Point this at the `dist` folder of the ensightful-control-electron checkout.
+# Set to None to disable static serving (API-only, e.g. when using `npm run dev`).
+FRONTEND_DIST_DIR = r"C:\Users\yuany\ensightful-control-electron\dist"
+
+
 ############################ Capture Saving Options ############################
 # root folder for saving captured data and database files.
 # ROOT_FOLDER = r"U:\Inspection_Data"

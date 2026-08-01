@@ -29,7 +29,7 @@ from backend.inspect_db import db, WallResult, db_add_dxf_file, DXF_DIR
 from backend.hardware_manager import HardwareManager
 from backend.project_manager import ProjectManager
 from config import (RUN_SIMULATION, PLC_WAIT_FOR_WALL, GET_MODEL_FROM_PLC,
-                    NUM_CAPTURE_POSITIONS)
+                    NUM_CAPTURE_POSITIONS, FRONTEND_DIST_DIR)
 from algorithms.dxf_convert_png import export_dark_bg
 
 PROGRAM_FOLDER = Path(__file__).parent.parent.parent
@@ -461,6 +461,63 @@ class FusionServerHandler:
             return web.json_response({'success': False, 'data': None, 'message': str(e)})
 
 
+    async def get_health_handler(self, request):
+        """
+        Liveness + hardware status - GET.
+
+        Answering at all proves the backend is up, which is what the Electron
+        shell polls before showing its window. `data.ready` says whether a
+        capture could actually run; `data.plc` / `data.cameras` say what is
+        broken so the UI can show it and offer a retry.
+
+        Deliberately never returns a non-200 for degraded hardware -- the whole
+        point is that the UI can load and explain the problem.
+        """
+        try:
+            hw = self.hardware_manager.status()
+        except Exception as e:
+            e = traceback.format_exc(); logger.error(e)
+            hw = {"ready": False, "error": str(e)}
+        return web.json_response({
+            'success': True,
+            'data': {
+                'backend': 'ok',
+                'capture_running': (self.current_capture_task is not None
+                                    and not self.current_capture_task.done()),
+                'post_processing': (self.post_process_task is not None
+                                    and not self.post_process_task.done()),
+                'ws_connected': self.ws is not None,
+                'current_step': self.current_step,
+                'hardware': hw,
+            },
+            'message': '',
+        })
+
+    async def get_reconnect_hardware_handler(self, request):
+        """
+        Retry hardware bring-up - GET. This is what the UI's fallback
+        "重新连接 / retry connection" button calls when auto-link fails.
+
+        Refuses while a capture is running, since re-initialising the camera
+        SDK or PLC client underneath a running capture would be worse than the
+        original failure.
+        """
+        try:
+            if self.current_capture_task is not None and not self.current_capture_task.done():
+                return web.json_response({
+                    'success': False, 'data': None,
+                    'message': '拍照进行中，无法重新连接硬件'})
+            logger.info("re-initialising hardware on request ...")
+            hw = self.hardware_manager.init()
+            return web.json_response({
+                'success': hw.get('ready', False),
+                'data': hw,
+                'message': '' if hw.get('ready') else '部分硬件仍未连接',
+            })
+        except Exception as e:
+            e = traceback.format_exc(); logger.error(e)
+            return web.json_response({'success': False, 'data': None, 'message': str(e)})
+
     async def start_server(self):
         @web.middleware
         async def print_url_path(request: web.Request, handler):
@@ -480,7 +537,24 @@ class FusionServerHandler:
         app = web.Application(middlewares=[print_url_path, cache_control], client_max_size=1048576*1e2)
         app.router.add_get('/ws', self.websocket_handler)
 
-        cors = aiohttp_cors.setup(app)
+        # CORS defaults applied to every route registered through `cors.add`.
+        # Without `defaults=`, aiohttp_cors emits no CORS headers at all, which
+        # only went unnoticed because the Vite dev server proxies /api and makes
+        # requests same-origin. Anything talking to this server directly (a
+        # packaged Electron build, a browser on another machine) needs these.
+        # Permissive is fine: this binds to a non-internet-facing rig PC.
+        cors = aiohttp_cors.setup(app, defaults={
+            "*": aiohttp_cors.ResourceOptions(
+                allow_credentials=False,
+                expose_headers="*",
+                allow_headers="*",
+            )
+        })
+
+        cors.add(app.router.add_route("GET", "/health", self.get_health_handler))
+        cors.add(app.router.add_route("GET", "/reconnectHardware",
+                                      self.get_reconnect_hardware_handler))
+
         cors.add(app.router.add_route("GET", "/exportExcel", self.get_export_excel_handler))
         cors.add(app.router.add_route("GET", "/leftImage", self.get_left_img_handler))
         cors.add(app.router.add_route("GET", "/rightImage", self.get_right_img_handler))
@@ -508,12 +582,53 @@ class FusionServerHandler:
                 )
             })
 
+        # Serve the built frontend at "/" so the Electron shell can load
+        # http://127.0.0.1:1337/ and be same-origin with the API -- no dev-server
+        # proxy, no CORS, no file:// base-URL problem. Registered LAST so it
+        # cannot shadow any API route above.
+        self._mount_frontend(app)
+
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         site = web.TCPSite(self.runner, '0.0.0.0', 1337)
         await site.start()
         logger.info(f"Server started at " + site.name)
         return self.runner
+
+    def _mount_frontend(self, app):
+        """
+        Mount the built frontend, if configured and present.
+
+        Missing or unbuilt is NOT an error: the backend stays usable API-only,
+        which is exactly what `npm run dev` wants (Vite serves the UI and proxies
+        here). It only logs what it did so a blank window is easy to diagnose.
+        """
+        if not FRONTEND_DIST_DIR:
+            logger.info("FRONTEND_DIST_DIR not set - serving API only")
+            return
+
+        dist = Path(FRONTEND_DIST_DIR)
+        index = dist / "index.html"
+        if not index.exists():
+            logger.warning(
+                f"FRONTEND_DIST_DIR={dist} has no index.html - serving API only. "
+                f"Run `npm run build` in the frontend checkout, or set "
+                f"FRONTEND_DIST_DIR = None to silence this.")
+            return
+
+        async def serve_index(request):
+            return web.FileResponse(index)
+
+        # index at "/", plus the hashed asset folders Vite emits.
+        app.router.add_get("/", serve_index)
+        for sub in ("assets", "static"):
+            if (dist / sub).is_dir():
+                app.router.add_static(f"/{sub}", dist / sub)
+        # Remaining top-level files (favicon, LOGO.png, ...). Registered as a
+        # static route rather than a catch-all so unknown API paths still 404
+        # instead of silently returning index.html.
+        app.router.add_static("/", dist, show_index=False)
+        logger.success(f"serving frontend from {dist}")
 
     async def stop_server(self):
         await self.runner.cleanup()
