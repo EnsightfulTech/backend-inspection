@@ -3,6 +3,11 @@ This file contains basic configuration options for the application to work norma
 Please change according to the systems' file sturcture.
 """
 
+import os
+from pathlib import Path
+
+_REPO_DIR = Path(__file__).resolve().parent
+
 
 ############################ Simulation configuration ############################
 # Control whether PLC not to wait for wall in position signal.
@@ -33,9 +38,29 @@ TRAJ_EXT_PKL = r"Data\model_0308\cam_traj_ext.pkl"
 # Built frontend (Vite `npm run build` output) served by aiohttp at "/", so the
 # Electron shell can load http://127.0.0.1:1337/ and everything is same-origin --
 # no dev-server proxy and no CORS in production.
-# Point this at the `dist` folder of the ensightful-control-electron checkout.
-# Set to None to disable static serving (API-only, e.g. when using `npm run dev`).
-FRONTEND_DIST_DIR = r"C:\Users\yuany\ensightful-control-electron\dist"
+#
+# Resolved automatically so this tracked file needs no per-machine editing
+# (a hardcoded path here would be wrong on every machine but the one it was
+# written on, and would arrive via `git pull` looking correct):
+#   1. the FRONTEND_DIST_DIR environment variable, if set;
+#   2. an ensightful-control-electron checkout beside this repo, e.g.
+#        C:\workspace\backend_inspection\        <- this repo
+#        C:\workspace\ensightful-control-electron\dist
+#   3. a frontend_dist/ folder copied inside this repo;
+#   4. otherwise None -> API only, which is what `npm run dev` wants (Vite
+#      serves the UI itself and proxies here). Not an error.
+def _resolve_frontend_dist():
+    env = os.environ.get("FRONTEND_DIST_DIR")
+    if env:
+        return env
+    for candidate in (_REPO_DIR.parent / "ensightful-control-electron" / "dist",
+                      _REPO_DIR / "frontend_dist"):
+        if (candidate / "index.html").exists():
+            return str(candidate)
+    return None
+
+
+FRONTEND_DIST_DIR = _resolve_frontend_dist()
 
 
 ############################ Capture Saving Options ############################
