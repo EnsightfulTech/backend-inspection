@@ -62,6 +62,20 @@ REG_POS_DONE = 903    # iUp_PosNum_Last (read; == commanded when move done)
 REG_CAM_DONE = 905    # iUp_Camera0k    (write capture-done)
 REG_CAMERA_NUM = 906  # iCameraNum      (write stop count; PLC derives rCameraDis)
 
+# MC_MoveAbsolute triggers on a RISING edge of Execute (bAx_AutoStrat), which the
+# PLC drives from an off-delay timer:
+#     TOFR(IN := (M1 or M2 or M3 or bTestAbs) and standstill and auto,
+#          PT := k100, R := , Q => bAx_AutoStrat)
+# When a move completes, M3 drops (iUp_PosNum == iUp_PosNum_Last) but Q stays
+# HIGH for PT = 100 ms because R is not wired. If we command the next stop inside
+# that window -- and polling turns around in tens of ms, so we always do -- M3
+# goes high again before Q falls. No falling edge means no rising edge, so
+# MC_MoveAbsolute never re-triggers and the axis sits with Execute stuck ON
+# forever. Waiting out the off-delay guarantees a clean edge.
+# The real fix belongs in the PLC (wire TOFR's R := bAx_AbsDone); this keeps the
+# host safe either way and costs 0.3 s per stop.
+POST_ARRIVAL_SETTLE_S = 0.3
+
 
 def log(msg):
     print(f"[capture_calib] {msg}", flush=True)
@@ -101,6 +115,10 @@ async def move_to_stop(plc, idx, timeout_s=60.0, poll_s=0.1):
         if val == idx:
             log(f"  -> arrived at stop {idx}"
                 + ("  (UNVERIFIED: D903 already held this value)" if stale else ""))
+            # Let bAx_AutoStrat's off-delay expire before the caller commands the
+            # next stop, or MC_MoveAbsolute gets no rising edge. See
+            # POST_ARRIVAL_SETTLE_S.
+            await asyncio.sleep(POST_ARRIVAL_SETTLE_S)
             return
         if time.time() - t0 > timeout_s:
             raise TimeoutError(

@@ -46,6 +46,17 @@ POLL_INTERVAL_S = 0.1
 # healthy request is milliseconds; failing fast and reporting it via /health is
 # far more useful than waiting.
 SOCKET_TIMEOUT_S = 3.0
+# Pause after the PLC reports arrival, before the caller commands the next stop.
+# MC_MoveAbsolute triggers on a RISING edge of Execute (bAx_AutoStrat), which the
+# PLC drives from an off-delay timer with PT = 100 ms and no reset wired:
+#     TOFR(IN := (M1 or M2 or M3 or bTestAbs) and standstill and auto,
+#          PT := k100, R := , Q => bAx_AutoStrat)
+# On completion M3 drops but Q stays HIGH for PT. Commanding the next stop inside
+# that window (polling turns around in tens of ms, so we always would) raises M3
+# again before Q falls -- no falling edge, therefore no rising edge, and the axis
+# deadlocks with Execute stuck ON. The proper fix is in the PLC (wire R :=
+# bAx_AbsDone); this keeps the host correct regardless.
+POST_ARRIVAL_SETTLE_S = 0.3
 
 
 class PLC_D901():
@@ -183,6 +194,9 @@ class AsyncPLCClient():
                         f"held that value - no movement was verified")
                 else:
                     logger.info(f"PLC: arrived at stop {pos_idx}")
+                # Let bAx_AutoStrat's off-delay expire so the next command
+                # produces a real rising edge. See POST_ARRIVAL_SETTLE_S.
+                await asyncio.sleep(POST_ARRIVAL_SETTLE_S)
                 return
             if loop.time() - t0 > timeout_s:
                 raise TimeoutError(
