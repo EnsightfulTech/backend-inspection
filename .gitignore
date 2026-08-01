@@ -3,3 +3,5 @@ __pycache__
 MvFGSdkLog
 MvSDKLog
 .tmp
+# local fallback data dir, created when the configured ROOT_FOLDER drive is absent
+_local_data/

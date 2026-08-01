@@ -29,7 +29,8 @@ from backend.inspect_db import db, WallResult, db_add_dxf_file, DXF_DIR
 from backend.hardware_manager import HardwareManager
 from backend.project_manager import ProjectManager
 from config import (RUN_SIMULATION, PLC_WAIT_FOR_WALL, GET_MODEL_FROM_PLC,
-                    NUM_CAPTURE_POSITIONS, FRONTEND_DIST_DIR)
+                    NUM_CAPTURE_POSITIONS, FRONTEND_DIST_DIR, ROOT_FOLDER,
+                    ROOT_FOLDER_FALLBACK)
 from algorithms.dxf_convert_png import export_dark_bg
 
 PROGRAM_FOLDER = Path(__file__).parent.parent.parent
@@ -478,6 +479,16 @@ class FusionServerHandler:
         except Exception as e:
             e = traceback.format_exc(); logger.error(e)
             hw = {"ready": False, "error": str(e)}
+        # CloudComPy is imported (and initialised) by main.py, which tolerates it
+        # being absent so the server can still start. Report it here so a missing
+        # install shows up in the UI instead of only failing at post-processing.
+        try:
+            import __main__
+            cc_ok = bool(getattr(__main__, 'CLOUDCOMPY_AVAILABLE', True))
+            cc_err = getattr(__main__, 'CLOUDCOMPY_ERROR', None)
+        except Exception:
+            cc_ok, cc_err = True, None
+
         return web.json_response({
             'success': True,
             'data': {
@@ -489,6 +500,15 @@ class FusionServerHandler:
                 'ws_connected': self.ws is not None,
                 'current_step': self.current_step,
                 'hardware': hw,
+                # Post-processing (measurement / CAD compare / Excel+PDF) needs
+                # CloudComPy; capture and the UI do not.
+                'cloudcompy': {'ok': cc_ok, 'error': cc_err},
+                'storage': {
+                    'root_folder': str(ROOT_FOLDER),
+                    # non-null means the configured drive was missing and data is
+                    # NOT going where config.py says
+                    'fallback_warning': ROOT_FOLDER_FALLBACK,
+                },
             },
             'message': '',
         })

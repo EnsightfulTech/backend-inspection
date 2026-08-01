@@ -64,9 +64,39 @@ FRONTEND_DIST_DIR = _resolve_frontend_dist()
 
 
 ############################ Capture Saving Options ############################
-# root folder for saving captured data and database files.
-# ROOT_FOLDER = r"U:\Inspection_Data"
-ROOT_FOLDER = r"D:\Inspection_Data"
+# Root folder for captured data and the SQLite database.
+#
+# backend/inspect_db.py creates ROOT_FOLDER/.db/dxf AT IMPORT TIME, so if this
+# points at a drive that does not exist the whole server dies on import before
+# anything can report why. That is fine on the rig (D: exists) but makes the
+# backend unrunnable on any machine without it.
+#
+# So: honour ROOT_FOLDER from the environment, and if the configured drive is
+# missing, fall back to a folder inside this repo and say so LOUDLY. The warning
+# matters -- on the rig a missing D: means data would otherwise silently land in
+# the wrong place, so this must be noticed, not absorbed. ROOT_FOLDER_FALLBACK
+# records whether that happened, and /health reports it.
+_ROOT_FOLDER_CONFIGURED = os.environ.get("ROOT_FOLDER") or r"D:\Inspection_Data"
+ROOT_FOLDER_FALLBACK = None
+
+
+def _resolve_root_folder():
+    global ROOT_FOLDER_FALLBACK
+    configured = Path(_ROOT_FOLDER_CONFIGURED)
+    drive = configured.drive
+    if drive and not Path(drive + "\\").exists():
+        fallback = _REPO_DIR / "_local_data"
+        ROOT_FOLDER_FALLBACK = (
+            f"configured ROOT_FOLDER {_ROOT_FOLDER_CONFIGURED!r} is on drive "
+            f"{drive} which does not exist on this machine; using {fallback} "
+            f"instead. Captured data and the database will NOT be where you "
+            f"expect -- fix ROOT_FOLDER before using this for real inspections.")
+        print(f"[config] WARNING: {ROOT_FOLDER_FALLBACK}", flush=True)
+        return str(fallback)
+    return _ROOT_FOLDER_CONFIGURED
+
+
+ROOT_FOLDER = _resolve_root_folder()
 
 ############################ PLC Options ############################
 # Gantry motion PLC (Modbus TCP). Found via AutoShop's 通讯设置 -> 以太网 -> 搜索,

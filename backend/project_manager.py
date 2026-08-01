@@ -22,7 +22,12 @@ from algorithms.calib_concant import combine_frames_extrinsic
 from algorithms.utils import padding_img_to_ratio_3_2
 from config import CAM_EXT_PKL, TRAJ_EXT_PKL, ROOT_FOLDER, RUN_SIMULATION, SIMULATION_DATA_DIR
 from algorithms.pcd_convert_png import plot_skeleton_on_image
-from algorithms.measure_compare.measurement import all_measurement
+# NOTE: algorithms.measure_compare.measurement is imported lazily in
+# run_algorithms(). It does `import cloudComPy` at module scope, so importing it
+# here would make the entire server fail to start whenever CloudComPy is missing
+# or broken -- even though capture, the PLC, the websocket and the UI do not need
+# it. Deferring keeps startup working and confines the failure to the one
+# operation that actually requires it.
 
 class ProjectManager:
     def __init__(self, wall_index, wall_model):
@@ -116,6 +121,18 @@ class ProjectManager:
         return img, transform_matrix
 
     async def run_algorithms(self):
+        # Imported here, not at module scope: this pulls in cloudComPy, and a
+        # missing/broken CloudComPy must not prevent the server from starting.
+        # See the note at the top of this file.
+        try:
+            from algorithms.measure_compare.measurement import all_measurement
+        except Exception as e:
+            logger.error(
+                f"Cannot run measurement: {e}. CloudComPy is required for "
+                f"post-processing (CAD comparison, Excel/PDF export). Capture "
+                f"data is saved and unaffected; check /health for status.")
+            raise
+
         pcd_combined = await self.combine_pcds()
         await self.convert_and_plot_pcd_result(pcd_combined)
 
