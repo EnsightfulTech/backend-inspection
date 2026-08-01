@@ -5,7 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 Backend server for an automated wall-panel (墙板) inspection system built for CSCEC. It drives a gantry-mounted
-PLC + dual RVC-X stereo camera rig to capture a wall from 8 positions, fuses the resulting point clouds into one
+PLC + dual RVC-X stereo camera rig to capture a wall from `config.NUM_CAPTURE_POSITIONS` stops (7 on this rig;
+the previous project used 8), fuses the resulting point clouds into one
 combined cloud, aligns it against a CAD (DXF) reference for that wall model, computes dimensional deviations
 (height/width/diagonal, window/door openings), and exports results as JSON/Excel/PDF. It talks to a separate
 frontend project (`ensightful-control`, not in this repo) over a websocket + HTTP API on port 1337.
@@ -82,13 +83,22 @@ of reviving a `tests/` folder of unmaintained scripts.
 Central place to change per-deployment behavior (per the project README):
 
 - `RUN_SIMULATION` — if `True`, never touches PLC or RVC cameras; `HardwareManager` reads pre-captured frames
-  from `SIMULATION_DATA_DIR` instead (folders `01`..`08`, each with `left/`/`right/` containing `Image.png`,
+  from `SIMULATION_DATA_DIR` instead (folders `01`..`0N` for N stops, each with `left/`/`right/` containing `Image.png`,
   `PointCloud.ply`, `Depth.tif`).
 - `USE_FAKE_DATA` — if `True`, skips the real post-processing pipeline after capture (demo mode).
 - `PLC_WAIT_FOR_WALL` — whether to block waiting for the "production line in position" PLC signal.
 - `GET_MODEL_FROM_PLC` — whether to read wall index/model via the snap7 connection, vs. using a hardcoded
   fallback (`wall_index=1`, `wall_model="J4_2025-2-19_LINE"`) in [backend/server/fusion_server.py](backend/server/fusion_server.py).
+- `NUM_CAPTURE_POSITIONS` — how many gantry stops the capture loop visits (**7** on this rig; the previous
+  project used 8, and that 8 was left hardcoded in `fusion_server.py` until 2026-08-01). This must agree with
+  **three** things or captures land in the wrong places: the PLC's `iCameraNum` (D906, which is what the PLC
+  divides its travel range into — it silently ignores any commanded index above it), the number of keys in the
+  active `TRAJ_EXT_PKL`, and the folder count under `SIMULATION_DATA_DIR` when simulating.
 - `CAM_EXT_PKL` / `TRAJ_EXT_PKL` — which calibration set under `Data/model_*/` is currently active (see below).
+  ⚠️ The currently-selected `Data/model_0308/cam_traj_ext.pkl` has **8** keys (`01`..`08`) — it is a legacy
+  8-stop calibration. With `NUM_CAPTURE_POSITIONS = 7` it will be *looked up successfully* for `01`..`07` and
+  therefore fail silently rather than erroring, while applying transforms computed for a different stop layout.
+  Regenerate it for the 7-stop geometry with the `calib/` pipeline before trusting any measurement.
 - `ROOT_FOLDER` — root for captured data and the SQLite database (`ROOT_FOLDER/.db/inspection.db`,
   DXF uploads under `ROOT_FOLDER/.db/dxf/`).
 
@@ -106,7 +116,7 @@ Flow:
    - optionally waits for the PLC "wall in position" signal (`hardware_manager.plc_wait_for_prod_line`)
    - optionally reads wall index/model from the PLC, else uses the hardcoded defaults
    - creates a new `ProjectManager(wall_index, wall_model)` for this run
-   - for each of 8 positions: `hardware_manager.move_to_and_capture(step)` (moves gantry via Modbus, captures
+   - for each of `NUM_CAPTURE_POSITIONS` stops: `hardware_manager.move_to_and_capture(step)` (moves gantry via Modbus, captures
      both RVC cameras), stores the result on `ProjectManager`, and notifies the frontend over the websocket
    - writes a `WallResult` DB row, then (unless `USE_FAKE_DATA`) launches `post_process_coroutine()` which runs
      the measurement pipeline and tells the frontend to refresh
@@ -124,7 +134,7 @@ the hardware SDKs installed.
 - Generates a daily-sequential inspection ID: `YYYYMMDD` + zero-padded count of today's existing DB rows.
 - Resolves the DXF reference file by convention: the first `_`-separated token of `wall_model` + `.dxf`,
   looked up under `DXF_DIR`.
-- `combine_pcds()` → `algorithms/calib_concant.py::combine_frames_extrinsic`: merges the 8×(left+right) captured
+- `combine_pcds()` → `algorithms/calib_concant.py::combine_frames_extrinsic`: merges the N×(left+right) captured
   point clouds using the active `CAM_EXT_PKL`/`TRAJ_EXT_PKL` transforms, plus fixed alignment matrices and a crop
   bounding box tuned for the physical rig — **not general-purpose, tied to this specific gantry setup**.
 - `run_algorithms()` → `algorithms/measure_compare/measurement.py::all_measurement(pcd_path, dxf_path)`: the

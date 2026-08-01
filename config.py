@@ -14,6 +14,15 @@ USE_FAKE_DATA = False
 GET_MODEL_FROM_PLC = False
 
 
+############################ Capture geometry ############################
+# Number of gantry stops the wall is captured from, i.e. how many positions the
+# capture loop visits. MUST match the PLC's iCameraNum (D906) -- the PLC divides
+# its travel range into that many stops and ignores any commanded index above it.
+# It must also match the number of keys in the active TRAJ_EXT_PKL below.
+# (Was 8 on the previous project; this rig is 7.)
+NUM_CAPTURE_POSITIONS = 7
+
+
 ############################ Extrinsics configuration ############################
 # extrinsic between left and right camera AND extrinsic between each of two right capture position. 
 CAM_EXT_PKL = r"Data\model_0308\left_right_ext.pkl"

@@ -28,7 +28,8 @@ from backend.utils import logger, toast_info
 from backend.inspect_db import db, WallResult, db_add_dxf_file, DXF_DIR
 from backend.hardware_manager import HardwareManager
 from backend.project_manager import ProjectManager
-from config import RUN_SIMULATION, PLC_WAIT_FOR_WALL, GET_MODEL_FROM_PLC
+from config import (RUN_SIMULATION, PLC_WAIT_FOR_WALL, GET_MODEL_FROM_PLC,
+                    NUM_CAPTURE_POSITIONS)
 from algorithms.dxf_convert_png import export_dark_bg
 
 PROGRAM_FOLDER = Path(__file__).parent.parent.parent
@@ -66,8 +67,7 @@ class FusionServerHandler:
                 wall_model = "J4_2025-2-19_LINE"
                 logger.info(f"default wall index: {wall_index}, wall model: {wall_model}")
 
-            steps_list = [1,2,3,4,5,6,7,8]
-            # steps_list = [4,5,6,7,8]
+            steps_list = list(range(1, NUM_CAPTURE_POSITIONS + 1))
             self.project_manager = ProjectManager(wall_index, wall_model)
             self.hardware_manager.set_capture_saving_path(self.project_manager.saving_path)
 
@@ -232,7 +232,7 @@ class FusionServerHandler:
             }
         """
         try:
-            num = 8
+            num = NUM_CAPTURE_POSITIONS
             logger.info(f"returning concant number: {num}")
             return web.json_response({'success': True, 'data': {'num': num}, 'message': ''})
         except Exception as e:
@@ -294,8 +294,11 @@ class FusionServerHandler:
                 image = image.decode('utf-8')
                 image_list.append({
                     'id': wall_result.id,
+                    # NOTE: the stop count isn't stored per run, so historical rows
+                    # captured under a different NUM_CAPTURE_POSITIONS report today's
+                    # value here.
                     'date': wall_result.created_date.strftime('%Y-%m-%d %H:%M:%S'),
-                    'num': 8,
+                    'num': NUM_CAPTURE_POSITIONS,
                     'imageSrc': image
                 })
             
