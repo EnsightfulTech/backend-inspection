@@ -105,10 +105,17 @@ async def run_capture(calib_root, n_stops, n_passes, start_pos=None, end_pos=Non
     calib_root = Path(calib_root)
     calib_root.mkdir(parents=True, exist_ok=True)
 
-    # nominal per-stop rail position (mm), if the HMI start/end were provided
+    # nominal per-stop rail position (mm), if the HMI start/end were provided.
+    # Spacing divides by (n_stops - 1), NOT n_stops, so that stop 1 sits on
+    # rStratPos and stop n_stops sits exactly on rEndPos -- matching the PLC's
+    # rAx_TagPos := rStratPos + (iUp_PosNum-1)*rCameraDis. This is what V1.1's
+    # ladder did (SUB UI_CameraNum K1 -> divide by N-1); V1.2's ST rewrite
+    # regressed it to /N, which parks the last stop 1/N short of rEndPos.
     stop_x = None
     if start_pos is not None and end_pos is not None:
-        cam_dis = (end_pos - start_pos) / n_stops        # matches PLC rCameraDis
+        if n_stops < 2:
+            raise ValueError("--n-stops must be >= 2 to compute a stop spacing")
+        cam_dis = (end_pos - start_pos) / (n_stops - 1)   # matches PLC rCameraDis
         stop_x = {f"{n:02d}": start_pos + (n - 1) * cam_dis for n in range(1, n_stops + 1)}
         log(f"nominal stop positions (mm): {stop_x}")
 
@@ -173,8 +180,10 @@ async def run_capture(calib_root, n_stops, n_passes, start_pos=None, end_pos=Non
         "n_passes": n_passes,
         "stop_names": [f"{n:02d}" for n in range(1, n_stops + 1)],
         "stop_x": stop_x,
-        "note": "stop_x is nominal (rStratPos+(n-1)*rCameraDis); "
-                "operational_stops for 7-stop inspection = start+(k-1)*(end-start)/7, k=1..7",
+        "note": "stop_x is nominal (rStratPos+(n-1)*rCameraDis, rCameraDis="
+                "(rEndPos-rStratPos)/(iCameraNum-1)); operational_stops for an "
+                "N-stop inspection = start+(k-1)*(end-start)/(N-1), k=1..N, "
+                "so stop 1 is at rStratPos and stop N is at rEndPos",
     }
     with open(calib_root / "capture_manifest.json", "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2, ensure_ascii=False)

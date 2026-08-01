@@ -257,10 +257,48 @@ python calib/capture_calib.py --calib-root D:/CalibData/2026-07-29 \
   move) nor rely on `wait_for_inpos()` (breaks on `D903 != 0`, which is stale after the first
   stop). Your production `async_plc_client.py` is left untouched.
 
-**PLC V1.2 register map** (confirmed from the variable list): `D902 iUp_PosNum` (write index),
-`D903 iUp_PosNum_Last` (reads back the index when `bAx_AbsDone`), `D905 iUp_Camera0k` (capture
-done), `D906 iCameraNum` (write stop count — PLC derives `rCameraDis` from it). `rStratPos/rEndPos`
+**PLC V1.2 register map** (confirmed from the variable table, and verified live on the rig
+2026-08-01 — reads, and a `set_camera_num(7)` write, both round-trip correctly):
+`D902 iUp_PosNum` (write index), `D903 iUp_PosNum_Last` (reads back the index when `bAx_AbsDone`),
+`D904 iProdrdy_ToUp` (wall in position, PLC→host), `D905 iUp_CameraOk` (capture done),
+`D906 iCameraNum` (write stop count — PLC derives `rCameraDis` from it). `rStratPos/rEndPos`
 remain HMI-only.
+
+`D906` is **non-retentive**: it resets to 0 on every PLC power cycle, and while it is 0 the PLC's
+`bData_Ok` guard is false so it ignores every position command. `HardwareManager` now writes
+`config.NUM_CAPTURE_POSITIONS` into it at startup for this reason.
+
+### ⚠️ PLC change required — stop spacing divisor
+
+`MAIN.ST` currently computes, **unguarded, every scan**:
+
+```pascal
+rCameraDis := (rEndPos-rStratPos)/INT_TO_REAL(iCameraNum);      -- wrong divisor
+```
+
+Two problems:
+
+1. **Wrong divisor.** With `rAx_TagPos := rStratPos + (iUp_PosNum-1)*rCameraDis`, dividing by `N`
+   puts the last stop at `rStratPos + (N-1)/N·range` — 1/N short of `rEndPos`, so the far end of
+   the wall is never photographed. V1.1 divided by `N-1`; the V1.2 ST rewrite regressed it.
+2. **Division by zero.** It is not inside the `bData_Ok` guard, so while `iCameraNum = 0` (its
+   power-up value) the PLC divides by zero on every scan, and `iPoint_AutoByKey` then divides by
+   that result again.
+
+Corrected form:
+
+```pascal
+IF iCameraNum > 1 THEN
+    rCameraDis := (rEndPos-rStratPos)/INT_TO_REAL(iCameraNum-1);
+END_IF
+```
+
+Also worth doing at the same time: initialise `iCameraNum := k7;` in the existing `IF M8002 THEN`
+power-up block (alongside `rAx_AbsAcc` etc.) so the PLC always powers into a usable state, and
+widen `bData_Ok`'s `iCameraNum>0` test to `iCameraNum>1`, since `N=1` now divides by zero.
+
+`capture_calib.py` and this document already use the corrected `N-1` form, so they will only agree
+with the rig **after** the PLC is updated.
 
 ## Running — step 2: calibrate (offline)
 
@@ -272,9 +310,15 @@ python calib/calibrate_rig.py --config calib_config.json
 ```
 
 Set the config's `operational_stops` x-values from the **operational** PLC formula
-`x_k = rStratPos + (k-1)·(rEndPos - rStratPos)/7`, k=1..7 — the continuous `pose(x)` model
-interpolates the dense calibration grid to exactly those positions, so the calibration stops
-need not coincide with the 7 operational stops.
+`x_k = rStratPos + (k-1)·(rEndPos - rStratPos)/(N-1)`, k=1..N (N = 7 here, so the divisor is
+**6**) — the continuous `pose(x)` model interpolates the dense calibration grid to exactly those
+positions, so the calibration stops need not coincide with the 7 operational stops.
+
+Note the divisor is **N-1, not N**, so stop 1 lands on `rStratPos` and stop N lands exactly on
+`rEndPos`. This matches the PLC's `rAx_TagPos := rStratPos + (iUp_PosNum-1)*rCameraDis` and what
+V1.1's ladder computed (`SUB UI_CameraNum K1` before the divide). ⚠️ **V1.2's ST rewrite regressed
+this to `/iCameraNum`**, which parks the last stop 1/N short of `rEndPos`; see "PLC change
+required" below. An earlier draft of this document copied the V1.2 `/7` form — that was wrong.
 
 ## Outputs (in `out_dir`)
 
