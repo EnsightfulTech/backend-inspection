@@ -300,6 +300,77 @@ widen `bData_Ok`'s `iCameraNum>0` test to `iCameraNum>1`, since `N=1` now divide
 `capture_calib.py` and this document already use the corrected `N-1` form, so they will only agree
 with the rig **after** the PLC is updated.
 
+**Status 2026-08-01: all three of the above are done and downloaded** — the monitor shows
+`rStratPos=100, rEndPos=5500, iCameraNum=7 → rCameraDis=900.0`, and a 7-stop dry run lands stop 7
+on `rEndPos`.
+
+### ⚠️ PLC: latched `bAx_AbsStrat_M3` (fixed 2026-08-01)
+
+`bAx_AbsStrat_M3` was set inside the auto-positioning `IF` with **no `ELSE`**, so once true it
+stayed true and `MC_MoveAbsolute`'s `Execute` never saw a second rising edge — only the first move
+of a session ran. Fixed by making it self-clearing, like its `M1`/`M2` siblings:
+
+```pascal
+    bAx_AbsStrat_M3 := TRUE;
+ELSE
+    bAx_AbsStrat_M3 := FALSE;
+END_IF
+```
+
+### ⚠️ PLC: `bAx_AutoStrat` off-delay swallows the next rising edge — STILL OPEN
+
+`MC_MoveAbsolute` triggers on a **rising edge** of `Execute`, driven from an off-delay timer whose
+reset is not wired:
+
+```pascal
+TOFR(IN := (M1 or M2 or M3 or bTestAbs) and bAxSt_StandStill and bMode_Auto,
+     PT := k100, R := , Q => bAx_AutoStrat);
+```
+
+When a move completes, `M3` drops (`iUp_PosNum == iUp_PosNum_Last`) but `Q` stays HIGH for
+`PT = 100 ms`. A host that polls `D903` and commands the next stop within that window — tens of
+milliseconds, so always — raises `M3` again before `Q` falls. No falling edge means no rising edge,
+`MC_MoveAbsolute` never re-triggers, and the axis **deadlocks with `Execute` stuck ON**, since `IN`
+then never goes false again.
+
+Symptom: stop 1 always succeeds (`Q` starts low after an idle period or an AUTO-mode toggle), every
+later stop hangs, with the monitor showing a correct `rAx_TagPos`, `M3` ON, `bAx_AutoStrat` ON, axis
+at standstill, and **no axis or servo error**.
+
+Fix — wire the reset, exactly as the commented-out `M1` rung in `MAIN.ST` already does:
+
+```pascal
+TOFR(IN := (...) AND bAxSt_StandStill AND bMode_Auto,
+     PT := k100, R := bAx_AbsDone, Q => bAx_AutoStrat, ET => );
+```
+
+Until that is downloaded, the host works around it by pausing `POST_ARRIVAL_SETTLE_S` (0.3 s) after
+each arrival — see `capture_calib.py` and `backend/plc_backend/async_plc_client.py`. Keeping that
+pause after the PLC is fixed is cheap (≈2 s per 7-stop sweep) and guards against the same class of
+edge-timing bug.
+
+### ⚠️ PLC: `MC_MoveAbsolute` error outputs are unwired
+
+In `SBR_AxisDeal.ST`, `Error`, `ErrorID` and `Busy` are all left blank on `MC_MoveAbsolute`. Any
+rejection of a move is therefore completely silent — nothing to read, and `iAx_AxErID`/`iAx_SrvErID`
+stay 0 because a function-block error is not an axis fault. That is what made the off-delay bug
+above take several test rounds to isolate. Wire them:
+
+```pascal
+                Busy => bAx_AbsBusy,
+                Error => bAx_AbsEr,
+                ErrorID => iAx_AbsErID);
+```
+
+### Gotcha: `iUp_PosNum_Last` (D903) is not cleared between runs
+
+Only an AUTO-mode rising edge zeroes it. So a fresh run can start with `D903` already equal to the
+first stop index, which makes that command a no-op (the PLC acts only on
+`iUp_PosNum <> iUp_PosNum_Last`) and any naive "wait for D903 == idx" pass instantly having moved
+nothing. `capture_calib.py` detects and reports this rather than reporting a false arrival — but it
+means **stop 1 of a sweep may legitimately not move**. Toggle the mode switch to AUTO before a real
+capture to start from a clean state.
+
 ## Running — step 2: calibrate (offline)
 
 Needs an env with **open3d, opencv, scipy, loguru** (the backend runtime env) plus matplotlib
