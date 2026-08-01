@@ -16,7 +16,9 @@ Known V1.2 mapping (from the AutoShop variable table):
     D903  iUp_PosNum_Last   PLC -> host : becomes == commanded when the move completes
     D904  iProdrdy_ToUp     PLC -> host : wall/production line in position
     D905  iUp_CameraOk      host -> PLC : capture-done handshake
-    D906  iCameraNum        host -> PLC : stop count (PLC derives rCameraDis)  [UNVERIFIED]
+    D906  iCameraNum        host -> PLC : stop count (PLC derives rCameraDis).
+                                    NON-RETENTIVE: resets to 0 on PLC power cycle, and
+                                    while it is 0 the PLC ignores all position commands.
 
 Note this reads Modbus holding registers by the same numbers the D-registers use,
 which is what the existing backend client assumes. If the values here look
@@ -39,7 +41,7 @@ LABELS = {
     903: "iUp_PosNum_Last  (PLC->host arrived-at index)",
     904: "iProdrdy_ToUp    (PLC->host wall in position)",
     905: "iUp_CameraOk     (host->PLC capture done)",
-    906: "iCameraNum       (host->PLC stop count)  [UNVERIFIED]",
+    906: "iCameraNum       (host->PLC stop count; non-retentive!)",
 }
 
 
