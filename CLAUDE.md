@@ -40,10 +40,16 @@ of reviving a `tests/` folder of unmaintained scripts.
 
 - **CloudComPy must be activated before `import cloudComPy`.** [main.py](main.py) and
   [algorithms/measure_compare/measurement.py](algorithms/measure_compare/measurement.py) both `import cloudComPy`
-  (CloudCompare's Python bindings, used for CAD-aligned point cloud preprocessing/slicing) — this only works if
-  [envActivation.py](envActivation.py)'s `setup_environment()` has already patched `PYTHONPATH`/`PATH` to point at
-  a local CloudComPy install. The install location is hardcoded: `C:\workspace\CloudComPy310\envCloudComPy.bat`.
-  The project is meant to run inside a conda env literally named `CloudComPy310`.
+  (CloudCompare's Python bindings, used for CAD-aligned point cloud preprocessing/slicing). `cloudComPy` isn't
+  pip-installable — it ships as a precompiled binary bundle (`.pyd` + Qt/PCL/CGAL DLLs) unpacked to a folder on
+  disk, and [envActivation.py](envActivation.py)'s `setup_environment()` must patch `PYTHONPATH`/`PATH` to point
+  at it before the import. That folder location is hardcoded: `C:\workspace\CloudComPy310\envCloudComPy.bat`.
+  Separately, [run_backend.bat](run_backend.bat) hardcodes a conda env literally named `CloudComPy310` in its
+  python.exe path — but that name isn't load-bearing, it's just what a prior engineer called their env; nothing
+  requires matching it, only that both hardcoded paths get edited to point at wherever you actually put things
+  on a new machine. The one real constraint is the Python version: whatever interpreter runs `main.py` must be
+  **Python 3.10 x64**, since the compiled `cloudComPy` extension (like `PyRVC`'s wheel) is ABI-locked to one
+  CPython minor version.
 - **`requirements.txt` does not cover everything.** `PyRVC` (proprietary RVC-X camera SDK) is listed only as a
   comment — install it separately. `cloudComPy` and `pywin32` (`win32com`, used for Excel→PDF export in
   `measurement.py`) aren't listed at all and must be present in the environment already.
@@ -60,6 +66,13 @@ of reviving a `tests/` folder of unmaintained scripts.
   [run_backend.bat](run_backend.bat)/[run_frontend.bat](run_frontend.bat) (which `cd` into hardcoded
   `C:\workspace\backend_inspection` / `C:\workspace\ensightful-control` and invoke a hardcoded conda python).
   These need manual editing per deployment machine — they are not read from `config.py`.
+- **Windows Firewall must allow the Python interpreter, or every RVC camera capture times out.**
+  GigE cameras stream image data as unsolicited inbound UDP. Without an allow rule the control channel
+  still works — devices enumerate, `Open()` succeeds, settings and firmware read back fine — but every
+  `Capture()`/`Capture2D()` fails after ~6 s with RVC error 215 (相机拍照超时), while RVCManager (which
+  ships its own firewall exception) captures normally. The rule is per-executable, so it must name the
+  exact `python.exe` that runs `main.py` — note `run_backend.bat` hardcodes its own interpreter path.
+  Full symptom/fix writeup in [calib/CALIBRATION.md](calib/CALIBRATION.md).
 - Windows-only: `windows_toasts` (desktop notifications on every websocket connect / hardware init, see
   [backend/utils.py](backend/utils.py)) and the Excel COM automation in `measurement.py`.
 

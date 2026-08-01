@@ -65,30 +65,63 @@ pip install <pyrvc wheel>                           # see the PyRVC version note
 (not pip packages): this **backend-inspection checkout** (scripts import `algorithms.*` /
 `backend.*`) and the **RVC SDK runtime** (`C:\Program Files\RVBUST`) for real capture.
 
+### ⚠️ Windows Firewall must allow the Python interpreter (GigE stream channel)
+
+**This is the single most likely reason capture fails on a freshly set-up PC.** Symptom
+(observed 2026-08-01 during rig bring-up):
+
+- `SystemListDevices` finds both cameras, `Open()` succeeds, `LoadCaptureOptionParameters()`
+  returns correct settings, `IsFirmwareMatch()` is `True` — **everything on the control channel
+  works**;
+- but *every* capture — `Capture()` (3D) **and** `Capture2D()` — fails after a fixed ~6.1–6.3 s with
+  **error 215 = 相机拍照超时 / capture timeout** (`RVCSDK\docs\ErrorCode.csv`), identically on both
+  cameras;
+- meanwhile **RVCManager captures the same cameras from the same PC in 3–4 s.**
+
+Cause: GigE Vision cameras push image data to the host as *unsolicited inbound UDP*. Control
+traffic is request/response and passes the firewall fine, so enumerate/open/read-settings all
+succeed; the image stream is dropped, so the SDK waits out its internal timeout and reports 215.
+RVCManager works because its installer registers a firewall exception — a conda `python.exe` has
+none.
+
+Fix — allow the interpreter inbound (Administrator prompt):
+
+```bat
+netsh advfirewall firewall add rule name="PyRVC python" dir=in action=allow ^
+  program="C:\path\to\envs\wallInspect\python.exe" enable=yes profile=any
+```
+
+The rule is **per executable**. `run_backend.bat` launches a *hardcoded* python.exe path — if that
+is a different interpreter from the one used for testing, add a rule for it too, or the production
+capture loop will time out while the test scripts pass. Turning the firewall off is fine as a
+one-minute diagnosis, but the allow rule is the fix; re-verify with the firewall back **on**.
+
+After the rule, expected timings (RVC-M52000, `CaptureMode_Ultra`, HDR off):
+`Capture2D` ≈ 0.15 s, `Capture` (3D) ≈ 2.4 s.
+
+Ruled out before finding this, recorded so it isn't re-investigated: capture mode (fails
+identically on SwingLineScan / Normal / Ultra — note the message text says "Normal Collect Failed"
+even when the mode is Ultra, so that word is the collection routine, not the mode), HDR bracketing,
+device-occupied (RVCManager fully closed — otherwise the camera won't even open), DLL path
+conflicts (only one `RVC.dll`/`RVC_C.dll` on `PATH`), firmware mismatch, trigger mode
+(`TriggerMode_SoftWare`, correct), and PyRVC version.
+
 ### PyRVC — version note (updated 2026-08-01)
 
-**1.14.0 (PyPI) imports fine but has an unresolved capture problem.** `pip install PyRVC==1.14.0`
-was the original recommendation because it imports and the DLLs load. During rig bring-up, however,
-`X2.Capture()` fails on camera `M2GM250B673` with **error 215 = 相机拍照超时 / capture timeout**
-(codes are in `RVCSDK\docs\ErrorCode.csv`), while **RVCManager captures the same camera in 3–4 s**
-with the same stored settings. Ruled out along the way: capture mode (fails identically on
-SwingLineScan / Normal / Ultra), HDR bracketing (off on the failing camera), device-occupied
-(RVCManager fully closed — otherwise the camera won't even open), DLL path conflicts (only one
-`RVC.dll`/`RVC_C.dll` on `PATH`), and slow-capture-vs-timeout (3–4 s is well within any timeout).
-Also note 1.14.0 does **not** expose `trigger_mode` or `line_scanner_confidence` on
-`X2_CaptureOptions`, so the trigger configuration — the leading remaining suspect — cannot be
-inspected from Python at all on that build.
+Either binding works; **the firewall above was the real blocker**, and it affected 1.14.0 and
+1.15.0 identically.
 
-**1.15.0 has been built from the on-disk SDK source** (supplier's recommendation) and is installed
-in `wallInspect` on the sandbox. Prebuilt wheel:
+- **1.14.0** — `pip install PyRVC==1.14.0`, straight from PyPI, no toolchain needed. Does **not**
+  expose `trigger_mode` or `line_scanner_confidence` on `X2_CaptureOptions`, nor `GetBandwidth`.
+- **1.15.0** — built from the on-disk SDK source (supplier's recommendation); exposes those extra
+  fields, which is how the trigger configuration was verified. Deployed and confirmed capturing on
+  the rig. Prebuilt wheel:
 
-```
-C:\Users\yuany\rvc_build\dist\pyrvc-1.15.0-cp310-cp310-win_amd64.whl   (49.3 MB)
-```
+  ```
+  C:\Users\yuany\rvc_build\dist\pyrvc-1.15.0-cp310-cp310-win_amd64.whl   (49.3 MB)
+  ```
 
-⚠️ **Not yet verified against the hardware** — as of 2026-08-01 it is unknown whether 1.15.0 fixes
-error 215. Re-run `diagnose_capture_mode.py` (does `trigger_mode` appear now?) and
-`test_camera_connection.py` before trusting it, and update this note with the result.
+The wheel is portable — see the build recipe below; the rig PC needs no C++ toolchain.
 
 #### Building the 1.15.0 wheel (only needed once, on a machine with MSVC)
 
