@@ -84,20 +84,33 @@ succeed; the image stream is dropped, so the SDK waits out its internal timeout 
 RVCManager works because its installer registers a firewall exception — a conda `python.exe` has
 none.
 
-Fix — allow the interpreter inbound (Administrator prompt):
+**Current workaround on the Guangzhou rig PC: Windows Firewall is switched off.** That machine is
+not normally connected to the public internet, so this was an accepted operational trade-off. With
+the firewall off, capture works immediately — expected timings (RVC-M52000, `CaptureMode_Ultra`,
+HDR off): `Capture2D` ≈ 0.15 s, `Capture` (3D) ≈ 2.4 s, image 2448×2048.
 
-```bat
-netsh advfirewall firewall add rule name="PyRVC python" dir=in action=allow ^
-  program="C:\path\to\envs\wallInspect\python.exe" enable=yes profile=any
-```
+**Allow rules did *not* work — do not assume they will.** All of the following were tried on the
+rig PC (2026-08-01) and capture still timed out with 215 until the firewall was turned off entirely:
 
-The rule is **per executable**. `run_backend.bat` launches a *hardcoded* python.exe path — if that
-is a different interpreter from the one used for testing, add a rule for it too, or the production
-capture loop will time out while the test scripts pass. Turning the firewall off is fine as a
-one-minute diagnosis, but the allow rule is the fix; re-verify with the firewall back **on**.
+- a per-program inbound allow rule for the env's `python.exe` (`netsh advfirewall firewall add rule
+  name="PyRVC python" dir=in action=allow program="...\python.exe" enable=yes profile=any`) —
+  verified present, enabled, inbound, allow, all profiles, any protocol;
+- checking for conflicting inbound **Block** rules for any `python.exe` (block wins over allow);
+- an IP-scoped rule allowing inbound UDP from the two camera addresses regardless of program.
 
-After the rule, expected timings (RVC-M52000, `CaptureMode_Ultra`, HDR off):
-`Capture2D` ≈ 0.15 s, `Capture` (3D) ≈ 2.4 s.
+A plausible explanation is that RVBUST bundles Hikvision MVS components (`MVGigEVisionSDK.dll`,
+`MvProducerGEV.cti`) and some GigE vendors ship a filter/performance driver that receives stream
+packets below the normal Windows socket layer, where per-application firewall rules don't apply —
+but this was **not** confirmed. Unresolved; worth raising with RVBUST if a firewall-on deployment
+is ever required.
+
+If you do need the firewall on elsewhere, note it can be disabled per profile rather than globally
+(`Get-NetConnectionProfile` to find the camera NIC's profile, then
+`Set-NetFirewallProfile -Profile <name> -Enabled False`), which leaves the other profiles active.
+
+Also note, if allow rules are ever revisited: such a rule is **per executable**, and
+`run_backend.bat` launches a *hardcoded* python.exe path — a rule covering the interpreter used for
+testing will not necessarily cover the one that runs `main.py` in production.
 
 Ruled out before finding this, recorded so it isn't re-investigated: capture mode (fails
 identically on SwingLineScan / Normal / Ultra — note the message text says "Normal Collect Failed"

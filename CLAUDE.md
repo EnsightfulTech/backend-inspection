@@ -66,13 +66,14 @@ of reviving a `tests/` folder of unmaintained scripts.
   [run_backend.bat](run_backend.bat)/[run_frontend.bat](run_frontend.bat) (which `cd` into hardcoded
   `C:\workspace\backend_inspection` / `C:\workspace\ensightful-control` and invoke a hardcoded conda python).
   These need manual editing per deployment machine — they are not read from `config.py`.
-- **Windows Firewall must allow the Python interpreter, or every RVC camera capture times out.**
-  GigE cameras stream image data as unsolicited inbound UDP. Without an allow rule the control channel
-  still works — devices enumerate, `Open()` succeeds, settings and firmware read back fine — but every
-  `Capture()`/`Capture2D()` fails after ~6 s with RVC error 215 (相机拍照超时), while RVCManager (which
-  ships its own firewall exception) captures normally. The rule is per-executable, so it must name the
-  exact `python.exe` that runs `main.py` — note `run_backend.bat` hardcodes its own interpreter path.
-  Full symptom/fix writeup in [calib/CALIBRATION.md](calib/CALIBRATION.md).
+- **Windows Firewall blocks the RVC cameras' GigE stream — it is switched OFF on the rig PC.**
+  GigE cameras push image data as unsolicited inbound UDP. With the firewall on, the control channel
+  still works (devices enumerate, `Open()` succeeds, settings and firmware read back fine) but every
+  `Capture()`/`Capture2D()` fails after ~6 s with RVC error 215 (相机拍照超时), while RVCManager —
+  which ships its own firewall exception — captures normally. Per-program allow rules, block-rule
+  checks, and IP-scoped UDP rules were all tried and **none worked**; disabling the firewall is the
+  current accepted workaround on that (non-internet-facing) machine. Expect to do the same on any new
+  rig PC. Full writeup in [calib/CALIBRATION.md](calib/CALIBRATION.md).
 - Windows-only: `windows_toasts` (desktop notifications on every websocket connect / hardware init, see
   [backend/utils.py](backend/utils.py)) and the Excel COM automation in `measurement.py`.
 
