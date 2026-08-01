@@ -141,12 +141,25 @@ class AsyncPLCClient():
                 f"(iCameraNum, D{REG_CAMERA_NUM}); the PLC would ignore it. Either the "
                 f"capture loop wants more stops than the PLC is configured for, or "
                 f"iCameraNum needs setting (set_camera_num).")
+        # D903 is not cleared between runs, so it may already equal pos_idx. That
+        # makes the command a no-op (the PLC acts only when iUp_PosNum <>
+        # iUp_PosNum_Last) AND makes the wait below pass instantly having moved
+        # nothing -- a silent false "arrival" that would let a capture fire at the
+        # wrong place. Detect and report it rather than trusting the wait.
+        before = self._read_reg(REG_POS_DONE)
+        if before == pos_idx:
+            logger.warning(
+                f"PLC: D{REG_POS_DONE} already reads {pos_idx} before commanding; the "
+                f"PLC will treat this as a no-op and 'arrival' cannot be trusted. "
+                f"(Stale from a previous run - an AUTO-mode edge clears it.)")
+
         logger.info(f"PLC: commanding move to stop {pos_idx} (D{REG_POS_CMD})")
         self.client.write_single_register(REG_POS_CMD, pos_idx)
-        await self.wait_for_inpos(pos_idx, timeout_s=timeout_s)
+        await self.wait_for_inpos(pos_idx, timeout_s=timeout_s, commanded_from=before)
 
     async def wait_for_inpos(self, pos_idx: int,
-                             timeout_s: float = DEFAULT_MOVE_TIMEOUT_S):
+                             timeout_s: float = DEFAULT_MOVE_TIMEOUT_S,
+                             commanded_from=None):
         """
         Block until the PLC reports arrival at `pos_idx`.
 
@@ -154,6 +167,9 @@ class AsyncPLCClient():
         so "arrived" means D903 == the index we commanded. Testing D903 != 0 is
         NOT sufficient: it is already non-zero after the first move of a run and
         would return immediately, letting a capture fire mid-travel.
+
+        `commanded_from` is D903's value before the command was written. If it
+        already equalled pos_idx the arrival is unverifiable -- see move_to().
         """
         loop = asyncio.get_event_loop()
         t0 = loop.time()
@@ -161,13 +177,23 @@ class AsyncPLCClient():
         while True:
             in_pos = self._read_reg(REG_POS_DONE)
             if in_pos == pos_idx:
-                logger.info(f"PLC: arrived at stop {pos_idx}")
+                if commanded_from == pos_idx:
+                    logger.warning(
+                        f"PLC: 'arrived' at stop {pos_idx} but D{REG_POS_DONE} already "
+                        f"held that value - no movement was verified")
+                else:
+                    logger.info(f"PLC: arrived at stop {pos_idx}")
                 return
             if loop.time() - t0 > timeout_s:
                 raise TimeoutError(
                     f"PLC: stop {pos_idx} not reached within {timeout_s}s "
-                    f"(D{REG_POS_DONE}={in_pos}). Check AUTO mode, homing, and the "
-                    f"HMI travel range / iCameraNum (bData_Ok).")
+                    f"(D{REG_POS_CMD}={pos_idx} accepted, D{REG_POS_DONE}={in_pos}). "
+                    f"The command register holds the right value, so the PLC is not "
+                    f"acting on it. Check in AutoShop (none of this is visible over "
+                    f"Modbus): AUTO mode (bMode_Auto), standstill (bAxSt_StandStill), "
+                    f"no servo/axis error, and bTestAbs not stuck TRUE - it is ORed "
+                    f"into the bAx_AutoStrat timer and suppresses the rising edge "
+                    f"MC_MoveAbsolute needs.")
             await asyncio.sleep(POLL_INTERVAL_S)
 
     async def wait_for_production_line(self, timeout_s: float = None):

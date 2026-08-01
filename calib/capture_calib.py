@@ -73,20 +73,44 @@ async def move_to_stop(plc, idx, timeout_s=60.0, poll_s=0.1):
 
     Unlike the backend's wait_for_inpos() (which breaks on D903 != 0 and so returns
     stale-true immediately after the first move), this waits for D903 == idx.
+
+    D903 (iUp_PosNum_Last) is NOT cleared between runs -- only an AUTO-mode
+    rising edge zeroes it. So it can already equal `idx` before we command
+    anything, in which case: (a) the PLC's own guard `iUp_PosNum <>
+    iUp_PosNum_Last` makes the command a no-op, and (b) a naive wait would
+    report "arrived" instantly having moved nothing. Both are called out below
+    rather than silently passing, because a fake arrival at stop 1 makes the
+    real failure look like it happens at stop 2.
     """
+    before = plc.client.read_holding_registers(REG_POS_DONE, 1)
+    before = before[0] if before else None
+    stale = (before == idx)
+    if stale:
+        log(f"  !! D903 is ALREADY {idx} before commanding. The PLC only acts when "
+            f"iUp_PosNum <> iUp_PosNum_Last, so this move is a no-op -- the gantry "
+            f"will NOT move, and 'arrived' below proves nothing. Left over from a "
+            f"previous run; toggle the mode switch to AUTO to clear it.")
+
     plc.client.write_single_register(REG_POS_CMD, idx)
-    log(f"  -> commanded stop {idx} (D902); waiting for D903 == {idx} ...")
+    log(f"  -> commanded stop {idx} (D902={idx}, D903 was {before}); "
+        f"waiting for D903 == {idx} ...")
     t0 = time.time()
     while True:
         done = plc.client.read_holding_registers(REG_POS_DONE, 1)
         val = done[0] if done else None
         if val == idx:
-            log(f"  -> arrived at stop {idx}")
+            log(f"  -> arrived at stop {idx}"
+                + ("  (UNVERIFIED: D903 already held this value)" if stale else ""))
             return
         if time.time() - t0 > timeout_s:
             raise TimeoutError(
-                f"stop {idx} not reached within {timeout_s}s (D903={val}). "
-                f"Check AUTO mode, homing, and HMI start/end/iCameraNum (bData_Ok).")
+                f"stop {idx} not reached within {timeout_s}s (D902={idx} was accepted, "
+                f"D903={val}). The command register holds the right value, so the PLC "
+                f"is not acting on it. Check on the HMI/AutoShop -- none of these are "
+                f"visible over Modbus: AUTO mode selected (bMode_Auto), axis homed and "
+                f"at standstill (bAxSt_StandStill), no servo/axis error, and bTestAbs "
+                f"NOT stuck TRUE (it is ORed into the same bAx_AutoStrat timer, so it "
+                f"suppresses the rising edge MC_MoveAbsolute needs).")
         await asyncio.sleep(poll_s)
 
 
