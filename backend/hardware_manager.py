@@ -8,7 +8,8 @@ import asyncio
 from pathlib import Path
 from loguru import logger
 from backend.utils import toast_info
-from config import RUN_SIMULATION, SIMULATION_DATA_DIR, PLC_WAIT_FOR_WALL
+from config import (RUN_SIMULATION, SIMULATION_DATA_DIR, PLC_WAIT_FOR_WALL,
+                    NUM_CAPTURE_POSITIONS)
 if not RUN_SIMULATION:
     from .plc_backend.async_plc_client import AsyncPLCClient
     from .rvc_cameras.async_rvc import AsyncRVCXCameras
@@ -23,6 +24,17 @@ class HardwareManager:
         else:
             logger.info("Running in real hardware mode...")
             self.plc_client = AsyncPLCClient()
+
+            # iCameraNum (D906) is non-retentive: it resets to 0 on every PLC
+            # power cycle, and while it is 0 the PLC's bData_Ok guard is false,
+            # so it silently ignores ALL position commands. Push our authoritative
+            # stop count so the rig is usable straight after a power cycle.
+            if not self.plc_client.set_camera_num(NUM_CAPTURE_POSITIONS):
+                logger.error(
+                    f"PLC: could not set iCameraNum to {NUM_CAPTURE_POSITIONS}; the "
+                    f"gantry will not move (bData_Ok stays false while it is 0).")
+                toast_info("PLC：拍照次数设置失败")
+
             self.rvc_client = AsyncRVCXCameras()
             if self.rvc_client.system_init() == 1:
                 logger.error("RVC cameras init failed!")
