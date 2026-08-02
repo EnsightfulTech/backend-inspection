@@ -116,6 +116,13 @@ Conda owns `numpy`, `opencv`, `matplotlib`, `scipy` — do **not** pip-install
 those, or you will end up with two managers fighting over the same libraries.
 So this is `requirements.txt` minus those four, plus `pywin32`:
 
+> **On `opencv`:** conda-forge's package includes the *contrib* modules, which
+> this project needs — `algorithms/CCTDecoder/circle_detect.py` calls
+> `cv2.ximgproc.createEdgeDrawing()`. A pip-only environment must therefore use
+> `opencv-contrib-python`, not plain `opencv-python`, or every CCT detection
+> fails with `module 'cv2' has no attribute 'ximgproc'`. The two pip packages
+> conflict, so install only one.
+
 ```bat
 pip install aiohttp aiohttp_cors loguru aiofiles peewee icecream aioconsole ^
             pyModbusTCP open3d Pillow ezdxf openpyxl pandas windows-toasts ^

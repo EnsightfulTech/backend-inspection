@@ -6,7 +6,10 @@ peewee
 icecream
 aioconsole
 numpy==1.26.4
-opencv-python
+# contrib build required, NOT plain opencv-python: algorithms/CCTDecoder/
+# circle_detect.py calls cv2.ximgproc.createEdgeDrawing(), which only exists in
+# the contrib modules. (conda-forge's `opencv` package also includes them.)
+opencv-contrib-python
 # PyRVC - from ruben SDK
 pyModbusTCP
 open3d

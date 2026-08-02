@@ -44,24 +44,34 @@ Camera I/O reuses `algorithms.my_pcd.MyPCD`, `algorithms.CCTDecoder.cct_decode.C
 
 ## Environment
 
-**Use the existing `wallInspect` conda env** — the backend-inspection runtime (Python 3.10.20 x64).
-It already has every dependency these scripts need, including a **PyRVC** binding; the calibration
-test passes in it as-is, nothing to add.
-
-The env is pinned to **Python 3.10 x64** on purpose: the PyRVC `.pyd` is ABI-locked to one Python
-version and `open3d` needs `numpy < 2`. Do **not** use base 3.13.
+**Use the `CloudComPy310` env** — the backend runtime, built per
+[ENVIRONMENT.md](../ENVIRONMENT.md). It has everything these scripts need.
 
 ```bash
-# preferred: just use the existing wallInspect env (has everything, incl. PyRVC)
-conda activate wallInspect
-# to recreate elsewhere from scratch:
-conda create -n wallInspect python=3.10 -y && conda activate wallInspect
-pip install -r calib/requirements-calib.lock.txt   # exact versions verified 2026-07-31
-pip install <pyrvc wheel>                           # see the PyRVC version note below
+conda activate CloudComPy310
 ```
 
-`calib/requirements-calib.lock.txt` is the frozen calib subset (73 packages); the full backend
-`requirements.txt` is a superset, so an existing `wallInspect` needs nothing added. Also required
+⚠️ **`opencv` must be the contrib build.** `algorithms/CCTDecoder/circle_detect.py` calls
+`cv2.ximgproc.createEdgeDrawing()`, which exists only in OpenCV's *contrib* modules. conda-forge's
+`opencv` includes them, so `CloudComPy310` is fine; a pip-only env installed from the old
+`requirements.txt` (plain `opencv-python`) fails on **every** image with:
+
+```
+AttributeError: module 'cv2' has no attribute 'ximgproc'
+```
+
+The older `wallInspect` env has that problem — use `CloudComPy310` instead.
+
+The env is pinned to **Python 3.10 x64** on purpose: the PyRVC and cloudComPy `.pyd`s are ABI-locked
+to one Python version and `open3d` needs `numpy < 2`. Do **not** use base 3.13.
+
+Note the offline half (`calibrate_rig.py`) needs neither **cloudComPy** nor **PyRVC** — only numpy,
+scipy, matplotlib, open3d, cv2 (contrib), PIL, loguru, icecream, typing_extensions. So it can run on
+any machine with the captured `.ply`/`.png`, not just the rig. `capture_calib.py` does need PyRVC and
+the PLC, so that half is rig-only.
+
+`calib/requirements-calib.lock.txt` is a frozen pip-only snapshot from the superseded `wallInspect`
+env; it predates the contrib-opencv finding, so treat ENVIRONMENT.md as authoritative. Also required
 (not pip packages): this **backend-inspection checkout** (scripts import `algorithms.*` /
 `backend.*`) and the **RVC SDK runtime** (`C:\Program Files\RVBUST`) for real capture.
 
