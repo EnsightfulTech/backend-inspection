@@ -18,3 +18,14 @@ openpyxl
 pandas
 windows-toasts
 python-snap7
+# --- measurement pipeline (algorithms/measure_compare) ---
+trimesh          # preprocess.py
+scikit-image     # main_fit_bottom_line.py (skimage.measure: LineModelND, ransac)
+typing_extensions  # my_pcd.py (Self)
+pywin32          # measurement.py Excel->PDF export (win32com), backend/test_printer.py
+#
+# NOTE: this file alone is NOT sufficient to build the runtime environment.
+# cloudComPy is a separate binary distribution, PyRVC is a vendor wheel, and on a
+# CloudComPy environment several of the packages above must come from conda
+# rather than pip (numpy, opencv, matplotlib, scipy) or the two package managers
+# fight over the same libraries. See ENVIRONMENT.md for the verified recipe.

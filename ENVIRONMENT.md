@@ -119,12 +119,19 @@ So this is `requirements.txt` minus those four, plus `pywin32`:
 ```bat
 pip install aiohttp aiohttp_cors loguru aiofiles peewee icecream aioconsole ^
             pyModbusTCP open3d Pillow ezdxf openpyxl pandas windows-toasts ^
-            python-snap7 pywin32
+            python-snap7 pywin32 trimesh scikit-image typing_extensions
 pip install <path>\pyrvc-1.15.0-cp310-cp310-win_amd64.whl
 ```
 
-`pywin32` is needed for the Excel→PDF export in `measurement.py` and is absent
-from `requirements.txt`.
+Four of those were missing from `requirements.txt` until 2026-08-02 and are easy
+to miss because nothing imports them until post-processing runs:
+
+| package | imported by |
+|---|---|
+| `trimesh` | `algorithms/measure_compare/preprocess.py` |
+| `scikit-image` | `main_fit_bottom_line.py` (`skimage.measure`) |
+| `typing_extensions` | `algorithms/my_pcd.py` |
+| `pywin32` | `measurement.py` Excel→PDF export (`win32com`) |
 
 ## 4. Verify
 
