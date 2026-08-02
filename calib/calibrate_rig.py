@@ -313,36 +313,73 @@ def residual_report(obs_list, stop_names, ref_stop, T_lr, Ts):
 #  pose(x) sag model + output
 # ======================================================================== #
 def fit_and_eval_posex(result, stop_x, operational_stops, model_kind="poly",
-                       poly_deg=3, crosscheck_tol_mm=2.0, crosscheck_tol_deg=0.05):
+                       poly_deg=3, crosscheck_tol_mm=2.0, crosscheck_tol_deg=0.05,
+                       prefer_direct=True, match_tol_mm=1.0):
     """
     Fit pose(x) over captured stops, evaluate at operational stops.
     Returns (model, traj_ext, crosscheck) where traj_ext = {op_name: 4x4}.
+
+    `prefer_direct` (default True): when an operational stop sits at the same
+    rail position as a stop that was actually calibrated, emit that stop's
+    measured bundle-adjusted pose rather than the smoothed pose(x) value.
+
+    This matters when calibration and inspection share stops -- the common case.
+    pose(x) exists to interpolate a dense calibration grid onto operational
+    positions that were never visited; where a position WAS visited, the direct
+    estimate is a measurement and the model value is a fit to it. A low-order
+    polynomial through few stops will not reproduce per-stop rotation exactly,
+    so preferring the model there discards real information and injects the
+    residual as pointing error. The cross-check below reports the difference
+    either way.
     """
     stops = result["stop_names"]
     xs = np.array([stop_x[s] for s in stops], dtype=float)
     poses = [result["T_stops"][s] for s in stops]
     model = g.fit_pose_x(xs, poses, kind=model_kind, poly_deg=poly_deg)
 
-    traj_ext = {}
-    for op_name, x_op in operational_stops.items():
-        traj_ext[op_name] = model.eval_pose(float(x_op))
+    def _match(x_op):
+        """Captured stop at this rail position, if any."""
+        near = [s for s in stops if abs(stop_x[s] - float(x_op)) <= match_tol_mm]
+        return near[0] if near else None
 
-    # cross-check: where an operational x coincides with a captured stop, compare
+    traj_ext = {}
+    sources = {}
+    for op_name, x_op in operational_stops.items():
+        s = _match(x_op) if prefer_direct else None
+        if s is not None:
+            traj_ext[op_name] = result["T_stops"][s]
+            sources[op_name] = f"direct({s})"
+        else:
+            traj_ext[op_name] = model.eval_pose(float(x_op))
+            sources[op_name] = "model"
+    n_direct = sum(1 for v in sources.values() if v.startswith("direct"))
+    log(f"  traj_ext: {n_direct}/{len(traj_ext)} stops from direct BA poses, "
+        f"{len(traj_ext) - n_direct} interpolated from pose(x)")
+
+    # Cross-check: where an operational x coincides with a captured stop, compare
+    # the measured pose against what the model would have produced. With
+    # prefer_direct this no longer affects the output -- it is a diagnostic of
+    # how well the smooth model describes the rig.
     crosscheck = []
     for op_name, x_op in operational_stops.items():
-        near = [s for s in stops if abs(stop_x[s] - float(x_op)) < 1e-6]
-        if near:
-            s = near[0]
-            T_direct = result["T_stops"][s]
-            T_model = traj_ext[op_name]
-            dt = np.linalg.norm(T_direct[:3, 3] - T_model[:3, 3])
-            dR = np.degrees(np.linalg.norm(
-                Rotation.from_matrix(T_direct[:3, :3] @ T_model[:3, :3].T).as_rotvec()))
-            ok = (dt <= crosscheck_tol_mm) and (dR <= crosscheck_tol_deg)
-            crosscheck.append({"op": op_name, "stop": s, "dt_mm": dt, "dR_deg": dR, "ok": ok})
-            if not ok:
-                log(f"  CROSSCHECK WARN {op_name}~{s}: dt={dt:.2f}mm dR={dR:.3f}deg "
-                    f"exceeds tol -> possible model bias / bad stop")
+        s = _match(x_op)
+        if s is None:
+            continue
+        T_direct = result["T_stops"][s]
+        T_model = model.eval_pose(float(x_op))
+        dt = np.linalg.norm(T_direct[:3, 3] - T_model[:3, 3])
+        dR = np.degrees(np.linalg.norm(
+            Rotation.from_matrix(T_direct[:3, :3] @ T_model[:3, :3].T).as_rotvec()))
+        ok = (dt <= crosscheck_tol_mm) and (dR <= crosscheck_tol_deg)
+        crosscheck.append({"op": op_name, "stop": s, "dt_mm": dt, "dR_deg": dR,
+                           "ok": ok, "used": sources[op_name]})
+        if not ok:
+            level = "note" if sources[op_name].startswith("direct") else "WARN"
+            log(f"  CROSSCHECK {level} {op_name}~{s}: dt={dt:.2f}mm dR={dR:.3f}deg "
+                f"exceeds tol -> pose(x) does not reproduce this stop"
+                + ("; using the direct pose, so the output is unaffected"
+                   if sources[op_name].startswith("direct")
+                   else "; this stop IS interpolated, so the error is in the output"))
     return model, traj_ext, crosscheck
 
 
@@ -458,10 +495,20 @@ def run(config):
         model_kind=model_cfg.get("kind", "poly"),
         poly_deg=model_cfg.get("poly_deg", 3),
         crosscheck_tol_mm=config.get("crosscheck_tol_mm", 2.0),
-        crosscheck_tol_deg=config.get("crosscheck_tol_deg", 0.05))
+        crosscheck_tol_deg=config.get("crosscheck_tol_deg", 0.05),
+        prefer_direct=config.get("prefer_direct", True))
 
-    plot_sag(result, stop_x, str(Path(out_dir) / "sag_curve.png"))
+    # Create out_dir HERE, not in write_outputs: plot_sag writes into it first,
+    # and a missing directory there threw away a completed bundle adjustment.
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+
+    # Write the real artifacts BEFORE plotting, and never let a plotting problem
+    # lose them. The BA can be an hour of work; sag_curve.png is a diagnostic.
     write_outputs(result, traj_ext, crosscheck, out_dir)
+    try:
+        plot_sag(result, stop_x, str(Path(out_dir) / "sag_curve.png"))
+    except Exception as e:
+        log(f"  WARNING: sag plot failed ({e}); pickles and report were still written")
     log("done.")
     return result, traj_ext
 
