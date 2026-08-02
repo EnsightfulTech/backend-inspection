@@ -54,6 +54,12 @@ of reviving a `tests/` folder of unmaintained scripts.
 - **`requirements.txt` does not cover everything.** `PyRVC` (proprietary RVC-X camera SDK) is listed only as a
   comment — install it separately. `cloudComPy` and `pywin32` (`win32com`, used for Excel→PDF export in
   `measurement.py`) aren't listed at all and must be present in the environment already.
+  **[ENVIRONMENT.md](ENVIRONMENT.md) is the verified, end-to-end recipe** for building the runtime env —
+  follow it rather than `requirements.txt` alone. Key points: it must be ONE Python 3.10 x64 env (`main.py`
+  needs `cloudComPy` and `PyRVC` in the same interpreter, both ABI-locked to 3.10); conda packages first and
+  pip second, with conda owning `numpy`/`opencv`/`matplotlib`/`scipy`; and CloudComPy additionally needs
+  **`mpir`**, which is missing from its own documented package list and whose absence surfaces only as an
+  opaque `DLL load failed while importing _cloudComPy`.
 - **Two independent PLC connections exist.** Gantry motion/position waiting uses Modbus TCP
   ([backend/plc_backend/async_plc_client.py](backend/plc_backend/async_plc_client.py), `config.PLC_HOST`/`PLC_PORT`).
   Reading the wall index/model off the line uses a separate Siemens S7 connection via `python-snap7`
