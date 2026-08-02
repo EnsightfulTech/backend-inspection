@@ -69,6 +69,39 @@ does not declare it as a runtime dependency (CGAL is largely header-only), so it
 is not pulled in and not mentioned upstream. It was the **only** unresolved
 dependency in the whole bundle.
 
+### ⚠️ Do not let anything upgrade `openssl` past 3.1
+
+`openssl=3.1` in the list above is load-bearing. This Python (3.10.13,
+conda-forge) is built against it, and a later `conda install` that re-solves the
+environment can silently pull `openssl` up to 3.6.x — after which `_ssl` still
+loads but misbehaves:
+
+```
+ssl.SSLError: [ASN1: NOT_ENOUGH_DATA] not enough data (_ssl.c:4030)
+```
+
+raised from `ssl.create_default_context()` → `load_default_certs()`. `aiohttp`
+builds a default SSL context **at import time**, so the whole backend dies on
+`import aiohttp` with a traceback that mentions certificates and looks nothing
+like a dependency problem.
+
+The giveaway that it is not a bad certificate: *every* certificate in the
+Windows store fails, including standard Microsoft/DigiCert ones that
+`cryptography` parses without complaint. Check with:
+
+```python
+import ssl; print(ssl.OPENSSL_VERSION)     # must report 3.1.x
+```
+
+Fix by pinning back — it does not disturb `mpir` or CloudComPy:
+
+```bat
+conda install -y "openssl=3.1"
+```
+
+Adding any package later re-solves the environment, so re-check `ssl` afterwards,
+or install with `--freeze-installed`.
+
 **Checkpoint — do not continue until this passes:**
 
 ```bat
@@ -95,10 +128,20 @@ from `requirements.txt`.
 
 ## 4. Verify
 
+Run these from `C:\workspace\CloudComPy310` after `envCloudComPy.bat` (it sets
+`PYTHONPATH`; without it `import cloudComPy` fails with `ModuleNotFoundError`
+even in a correct environment):
+
 ```bat
 python -c "import cloudComPy, PyRVC; print('both OK')"
-python envActivation.py          :: expect "Environment OK!"
+python -c "import ssl; ssl.create_default_context(); print(ssl.OPENSSL_VERSION)"
 python -c "import numpy; print(numpy.__version__)"   :: must be < 2
+```
+
+and from the backend checkout:
+
+```bat
+python envActivation.py          :: expect "Environment OK!"
 ```
 
 `import cloudComPy` prints two harmless Qt messages
