@@ -194,44 +194,61 @@ mainland-China mirror. Keep it with the deployment artifacts.
 
 ## Directory layout (pass-major)
 
+Stop folders are named `01`..`0N` — that is what `AsyncRVCXCameras.capture_dual`
+writes (`str(idx).zfill(2)`), and `calibrate_rig.py` takes each stop's name
+straight from the folder name. They are **not** `stop_00`-style.
+
 ```
 calib_root/
   pass_00/
-    stop_00/ left/{Image.png,PointCloud.ply}   right/{Image.png,PointCloud.ply}
-    stop_01/ ...
+    01/ left/{Image.png,PointCloud.ply}   right/{Image.png,PointCloud.ply}
+    02/ ...
     ...
-    stop_06/
+    07/
   pass_01/            # boards re-posed
-    stop_00/ ...
+    01/ ...
   pass_02/ ...
+  capture_manifest.json     # written by capture_calib.py; copy stop_x from here
 ```
 
 ## Config
 
-JSON file passed via `--config` (CLI flags `--calib-root/--out-dir/--reference-stop` override):
+JSON file passed via `--config` (CLI flags `--calib-root/--out-dir/--reference-stop` override).
+
+⚠️ **`stop_x` and `reference_stop` keys must be the folder names** (`"01"`,
+`"02"`, …). Using `"stop_00"` raises `KeyError` when the pose(x) model is fitted.
+The easiest correct source is the `stop_x` block that `capture_calib.py` already
+wrote into `capture_manifest.json`.
+
+Example for this rig — 7 stops, `rStratPos=100`, `rEndPos=5500`, so spacing
+`(5500-100)/(7-1) = 900`:
 
 ```json
 {
-  "calib_root": "D:/CalibData/2026-07-29",
-  "out_dir":    "D:/CalibData/2026-07-29/calib_out",
-  "reference_stop": "stop_00",
+  "calib_root": "D:/CalibData/2026-08-02",
+  "out_dir":    "D:/CalibData/2026-08-02/calib_out",
+  "reference_stop": "01",
   "cct_n": 12,
-  "stop_x": { "stop_00": 0, "stop_01": 1000, "stop_02": 2000, "stop_03": 3000,
-              "stop_04": 4000, "stop_05": 5000, "stop_06": 6000 },
-  "operational_stops": { "01": 0, "02": 1000, "03": 2000, "04": 3000,
-                         "05": 4000, "06": 5000, "07": 6000 },
+  "stop_x": { "01": 100, "02": 1000, "03": 1900, "04": 2800,
+              "05": 3700, "06": 4600, "07": 5500 },
+  "operational_stops": { "01": 100, "02": 1000, "03": 1900, "04": 2800,
+                         "05": 3700, "06": 4600, "07": 5500 },
   "model": { "kind": "poly", "poly_deg": 3 },
   "crosscheck_tol_mm": 2.0,
   "crosscheck_tol_deg": 0.05
 }
 ```
 
+When calibration uses the same stops the inspection will use — the normal case —
+`operational_stops` is simply a copy of `stop_x`.
+
 - **`stop_x`** — rail position (mm) of each *captured* stop. Drives the sag curve's x-axis.
   If omitted, ordinal positions are used and the sag axis is in "stop units" (warns).
 - **`operational_stops`** — `{output_key: rail_x_mm}`. `pose(x)` is evaluated at each `rail_x_mm`
   and written under `output_key`. **The keys must equal the folder names the inspection capture
-  writes** — currently `"01".."08"` (`async_rvc.capture_dual` uses `str(idx).zfill(2)`), which is
-  how `combine_frames_extrinsic` looks up `traj_ext[idx]`.
+  writes** — `"01".."07"` for this rig (`async_rvc.capture_dual` uses `str(idx).zfill(2)`, and the
+  count is `config.NUM_CAPTURE_POSITIONS`), which is how `combine_frames_extrinsic` looks up
+  `traj_ext[idx]`.
 - **`model.kind`** — `"poly"` (default, degree `poly_deg`; matches a beam-deflection shape) or
   `"spline"` (smoothing spline) when you have many samples.
 
