@@ -472,18 +472,44 @@ Runs `rig_geometry` unit checks and a synthetic end-to-end (known `T_lr` + known
 noisy projected marker field, multi-pass) asserting recovery within noise. Reference result on
 0.4 mm depth noise: `T_lr` err ≈ 0.004°/0.08 mm, per-stop ≤ 0.03°/1 mm, residual RMS ≈ 0.55 mm.
 
-**Real-hardware result (2026-08-02 sandbox capture, 10 passes × 7 stops)**: overall residual RMS
-**72.9 mm**, L-R RMS **146.3 mm**, pose(x) crosscheck `dt` up to 16 mm / `dR` up to 0.59°, all far
-outside `crosscheck_tol_mm=2.0` / `crosscheck_tol_deg=0.05`. That is 100-300x worse than the
-synthetic reference above and **not deployable** — do not point `config.py` at this run's pickles.
-The BA also barely moved the cost from its initial value (`init RMS=73.8mm` → `final RMS=72.9mm`),
-which for a bundle adjustment this overdetermined (4363 residuals, 42 params) points at systematic
-correspondence error rather than ordinary sensor noise — e.g. CCT marker IDs colliding across
-boards/passes so the solver is averaging together points that aren't actually the same physical
-marker, not a calibration-quality problem noise-averaging would fix with more passes. Investigate
-marker ID uniqueness/decoding (`cct_n`, board layout, `CCT_extract` color param) and re-run before
-trusting a future result; still need to feed a *good* run's pickles to `combine_frames_extrinsic`
-and visually confirm the L-R and inter-stop clouds overlap with no ghosting.
+**Real-hardware result (2026-08-02 sandbox capture, 10 passes × 7 stops)**: first attempt gave
+overall residual RMS **72.9 mm**, L-R RMS **146.3 mm** — 100-300x worse than the synthetic
+reference above, and not deployable. Root-caused (via CCT decode screening, see below) to marker
+ID collisions, not the calibration math: the loop-closure assumption itself checked out (stops
+with clean data landed at 0.3-0.6mm, matching synthetic expectations). After fixing decode
+screening, the same dataset gives **overall RMS 0.96 mm, L-R RMS 0.50 mm**, every stop under
+1.4mm, every pass under 1.8mm. `left_right_ext.pkl` baseline (1617.6mm, near-identity rotation)
+matches the rig's known ~1.6m camera separation. **Still need to** feed these pickles to
+`combine_frames_extrinsic` and visually confirm the L-R and inter-stop clouds overlap with no
+ghosting before pointing `config.py` at them.
+
+### CCT decode screening (`screen_detections` in `calibrate_rig.py`)
+
+The decoder (`algorithms/CCTDecoder/cct_decode.py`) occasionally misdecodes a real target as a
+*different, still-valid* code — usually from densely-packed cells at an oblique angle, or a false
+positive on background clutter (rebar/decking) that coincidentally lands on a valid code by
+chance. `bundle_adjust` has no way to tell this from a genuine shared marker, so a handful of these
+were enough to dominate the whole solve. `screen_detections()` cross-checks every decode against
+the printed board layout (`BOARD_LAYOUT`, from `双目二维码61x52cm-16张.pdf` — 16 boards × 9 codes,
+verified unique): a board is only trusted once **≥3** of its 9 codes are seen together, a
+detection whose position doesn't match the rest of that board's cluster is dropped, and a board's
+one remaining unclaimed code gets filled in from a single unexplained nearby detection ("we see
+1365, 1019, 1367, so the 4th must be 1021").
+
+Group by decoded-code board identity **first**, geometry **second** — not the reverse. An earlier
+version clustered by pixel proximity before looking at codes, which works fine when boards are
+sparse but silently breaks down whenever multiple boards are photographed close together: measured
+on real captures, the gap *between* boards can be smaller (~90px) than the pitch *within* one board
+(~150-230px), so proximity clustering chain-links unrelated boards into one blob and whichever
+board's codes happen to have the most raw hits "wins" the whole blob, discarding every other
+board's legitimately-decoded cells as collateral damage. Grouping by code identity sidesteps this
+entirely since `CODE_TO_BOARD` is an exact lookup, not a distance threshold.
+
+Even after this, a small number of misdecodes may still slip through (e.g. two independent
+misdecodes coincidentally agreeing on a third board's code — why `min_board_votes` is 3, not 2).
+`bundle_adjust`'s `soft_l1` robust loss (`robust_f_scale_mm`, default 1.5mm) is the second line of
+defense, down-weighting whatever residual outliers remain rather than letting them dominate the
+cost the way plain least-squares does.
 
 ## Assumptions
 
