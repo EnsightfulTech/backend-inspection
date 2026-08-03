@@ -427,7 +427,14 @@ def _jsonable(o):
         return {k: _jsonable(v) for k, v in o.items()}
     if isinstance(o, (list, tuple)):
         return [_jsonable(v) for v in o]
-    if isinstance(o, (np.floating, np.integer)):
+    # np.generic covers every numpy scalar type (np.floating, np.integer, and
+    # crucially np.bool_, which the previous np.floating/np.integer-only check
+    # missed). crosscheck's "ok" is `(dt <= tol) and (dR <= tol)` on
+    # np.linalg.norm() floats, i.e. np.bool_, not a native bool -- that silently
+    # broke json.dump on every run, hidden until now behind an earlier crash
+    # (write_outputs used to run after plot_sag, which failed first on a
+    # missing out_dir).
+    if isinstance(o, np.generic):
         return o.item()
     return o
 
