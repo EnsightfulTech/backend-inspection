@@ -427,6 +427,20 @@ required" below. An earlier draft of this document copied the V1.2 `/7` form —
 - **`sag_curve.png`** — 6 panels (rotvec x/y/z, t x/y/z) vs rail x: BA per-stop points + fitted
   pose(x) curve.
 
+### Units: pickles are meters, everything else is mm
+
+Point clouds loaded via `MyPCD` (and therefore every `Obs.xyz` fed into the solver) are in
+**meters** — RVC saves `PointMapUnitEnum.Meter`. `calibrate_rig.py`'s math/reporting functions
+(`bundle_adjust`, `residual_report`, `fit_and_eval_posex`) are unit-agnostic internally but their
+field names and tolerances (`*_rms_mm`, `crosscheck_tol_mm`) assume **mm**, matching `stop_x`
+(genuinely mm, from the PLC) and `test_calibrate_rig.py`'s synthetic data (built directly in mm).
+`load_observations()` converts real point-cloud xyz meters→mm at ingestion so the rest of the
+pipeline — and `calib_report.json` — is consistently mm. `write_outputs()` converts back mm→meters
+only for the two pickles, since `combine_frames_extrinsic` applies them to point clouds that are
+natively meters again at inspection time. If you ever call `bundle_adjust`/`residual_report`/
+`fit_and_eval_posex` directly with your own `Obs` list (bypassing `load_observations()`), make sure
+`xyz` is already mm, or every `_mm` value and the crosscheck tolerance comparison will be wrong.
+
 ### Reading the sag plot
 
 Each panel is one DOF of the stop pose vs rail position. A smooth **bow peaking near mid-span**
@@ -458,9 +472,17 @@ Runs `rig_geometry` unit checks and a synthetic end-to-end (known `T_lr` + known
 noisy projected marker field, multi-pass) asserting recovery within noise. Reference result on
 0.4 mm depth noise: `T_lr` err ≈ 0.004°/0.08 mm, per-stop ≤ 0.03°/1 mm, residual RMS ≈ 0.55 mm.
 
-**Still to do on real hardware** (needs the capture data + backend env, cannot be done offline):
-run on one real pass and confirm the residual RMS is mm-scale and the `cam_traj_ext.pkl` keys
-match the inspection capture folder names; then feed both pickles to `combine_frames_extrinsic`
+**Real-hardware result (2026-08-02 sandbox capture, 10 passes × 7 stops)**: overall residual RMS
+**72.9 mm**, L-R RMS **146.3 mm**, pose(x) crosscheck `dt` up to 16 mm / `dR` up to 0.59°, all far
+outside `crosscheck_tol_mm=2.0` / `crosscheck_tol_deg=0.05`. That is 100-300x worse than the
+synthetic reference above and **not deployable** — do not point `config.py` at this run's pickles.
+The BA also barely moved the cost from its initial value (`init RMS=73.8mm` → `final RMS=72.9mm`),
+which for a bundle adjustment this overdetermined (4363 residuals, 42 params) points at systematic
+correspondence error rather than ordinary sensor noise — e.g. CCT marker IDs colliding across
+boards/passes so the solver is averaging together points that aren't actually the same physical
+marker, not a calibration-quality problem noise-averaging would fix with more passes. Investigate
+marker ID uniqueness/decoding (`cct_n`, board layout, `CCT_extract` color param) and re-run before
+trusting a future result; still need to feed a *good* run's pickles to `combine_frames_extrinsic`
 and visually confirm the L-R and inter-stop clouds overlap with no ghosting.
 
 ## Assumptions
