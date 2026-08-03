@@ -53,6 +53,23 @@ from calib import rig_geometry as g
 # one detected marker lifted to 3D in its own camera frame
 Obs = namedtuple("Obs", ["pass_id", "stop", "cam", "marker_id", "xyz"])
 
+# Point clouds loaded via algorithms.my_pcd.MyPCD are in METERS (RVC saves
+# PointMapUnitEnum.Meter; verified against a real capture: z/depth median
+# ~2.89, matching the rig's known ~2.85m camera standoff). Every function below
+# (bundle_adjust, residual_report, fit_and_eval_posex) is unit-agnostic and
+# labels its outputs "_mm" / compares against tolerances named "*_tol_mm" --
+# i.e. it assumes its input Obs.xyz values are already millimeters, matching
+# stop_x (from the PLC, genuinely mm) and test_calibrate_rig.py's synthetic
+# data (constructed directly in mm). So the ONE place that must convert is
+# load_observations(), right where real point-cloud xyz is lifted -- not
+# scattered through the math/reporting functions, which stay unit-agnostic and
+# are shared by the synthetic test. The inspection runtime
+# (algorithms/calib_concant.py::combine_frames_extrinsic) then consumes
+# left_right_ext.pkl/cam_traj_ext.pkl against point clouds that are natively
+# METERS again, so write_outputs() converts back mm -> meters only for those
+# two pickles, not for calib_report.json (which stays mm, for humans).
+M_TO_MM = 1000.0
+
 
 def log(msg):
     print(f"[calibrate_rig] {msg}", flush=True)
@@ -100,7 +117,7 @@ def load_observations(calib_root, cct_n=12, cct_color="white"):
                         continue
                     obs_list.append(
                         Obs(pass_id, stop, "L" if cam == "left" else "R",
-                            int(mid), np.asarray(xyz, dtype=float)))
+                            int(mid), np.asarray(xyz, dtype=float) * M_TO_MM))
                     n_lifted += 1
                 log(f"  {pass_id}/{stop}/{cam}: {len(cct)} CCT, {n_lifted} lifted to 3D")
 
@@ -145,7 +162,8 @@ def init_lr(obs_list):
     R_all = np.vstack(R_pts)
     L_all = np.vstack(L_pts)
     T = g.umeyama(R_all, L_all)          # right -> left
-    log(f"  T_lr init from {len(R_all)} L/R pairs, rmse={g.rigid_rmse(T, R_all, L_all):.3f}")
+    log(f"  T_lr init from {len(R_all)} L/R pairs, "
+        f"rmse={g.rigid_rmse(T, R_all, L_all):.3f} mm")
     return T
 
 
@@ -250,14 +268,16 @@ def bundle_adjust(obs_list, stop_names, ref_stop, T_lr0=None, T_stops0=None,
 
     r0 = residuals(p0)
     log(f"  BA: {len(groups)} groups, {sum(len(v) for v in group_obs)} obs, "
-        f"{len(p0)} params, {len(r0)} residuals; init RMS={_rms(r0):.3f} mm")
+        f"{len(p0)} params, {len(r0)} residuals; "
+        f"init RMS={_rms(r0):.3f} mm")
 
     sol = least_squares(residuals, p0, method="trf",
                         xtol=1e-12, ftol=1e-12, gtol=1e-12,
                         verbose=2 if verbose else 0)
     T_lr, Ts = unpack(sol.x)
     final = residuals(sol.x)
-    log(f"  BA done: final RMS={_rms(final):.3f} mm  (scipy status {sol.status})")
+    log(f"  BA done: final RMS={_rms(final):.3f} mm  "
+        f"(scipy status {sol.status})")
 
     stats = residual_report(obs_list, stops, ref_stop, T_lr, Ts)
     return {
@@ -271,6 +291,7 @@ def bundle_adjust(obs_list, stop_names, ref_stop, T_lr0=None, T_stops0=None,
 
 
 def _rms(vec):
+    """RMS of Euclidean norms of (N,3) vectors, in whatever unit `vec` is in."""
     vec = np.asarray(vec).reshape(-1, 3)
     return float(np.sqrt(np.mean(np.sum(vec ** 2, axis=1)))) if len(vec) else 0.0
 
@@ -401,6 +422,9 @@ def plot_sag(result, stop_x, out_png):
     xg = np.linspace(xs.min(), xs.max(), 200)
     vg = model.eval_vec(xg)
 
+    # T_stops translation is already mm here (load_observations converts real
+    # point-cloud xyz meters->mm at ingestion; see M_TO_MM). Rotation (rotvec,
+    # radians) and stop_x (from the PLC, mm) need no conversion.
     labels = ["rotvec_x (rad)", "rotvec_y (rad)", "rotvec_z (rad)",
               "t_x (mm)", "t_y (mm)", "t_z (mm)"]
     fig, axes = plt.subplots(2, 3, figsize=(15, 8))
@@ -439,14 +463,25 @@ def _jsonable(o):
     return o
 
 
+def _mm_pose_to_m(T):
+    """Copy of a 4x4 pose with its translation column converted mm -> meters."""
+    T = np.array(T, dtype=float, copy=True)
+    T[:3, 3] /= M_TO_MM
+    return T
+
+
 def write_outputs(result, traj_ext, crosscheck, out_dir):
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # result["T_lr"]/traj_ext are mm internally (see M_TO_MM). The runtime
+    # consumer (combine_frames_extrinsic) applies these to point clouds loaded
+    # via MyPCD, which are natively meters -- so only the two pickles consumed
+    # by that runtime get converted back; calib_report.json below stays mm.
     with open(out_dir / "left_right_ext.pkl", "wb") as f:
-        pickle.dump(result["T_lr"], f)
+        pickle.dump(_mm_pose_to_m(result["T_lr"]), f)
     with open(out_dir / "cam_traj_ext.pkl", "wb") as f:
-        pickle.dump(traj_ext, f)
+        pickle.dump({k: _mm_pose_to_m(v) for k, v in traj_ext.items()}, f)
 
     report = {
         "reference_stop": result["reference_stop"],
