@@ -11,7 +11,11 @@ _REPO_DIR = Path(__file__).resolve().parent
 
 ############################ Simulation configuration ############################
 # Control whether PLC not to wait for wall in position signal.
-PLC_WAIT_FOR_WALL = True
+# TEMP for rig bench-testing (no real production line delivering a wall, so
+# D904/iProdrdy_ToUp never goes high and run_capture_process() would otherwise
+# block forever before ever moving the gantry). Set back to True before real
+# production use.
+PLC_WAIT_FOR_WALL = False
 # Control whether to connect to PLC and camera.
 RUN_SIMULATION = False
 SIMULATION_DATA_DIR = r"D:\Inspection_data\20250309001"
