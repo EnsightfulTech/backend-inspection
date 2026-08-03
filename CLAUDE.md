@@ -101,10 +101,13 @@ Central place to change per-deployment behavior (per the project README):
   divides its travel range into — it silently ignores any commanded index above it), the number of keys in the
   active `TRAJ_EXT_PKL`, and the folder count under `SIMULATION_DATA_DIR` when simulating.
 - `CAM_EXT_PKL` / `TRAJ_EXT_PKL` — which calibration set under `Data/model_*/` is currently active (see below).
-  ⚠️ The currently-selected `Data/model_0308/cam_traj_ext.pkl` has **8** keys (`01`..`08`) — it is a legacy
-  8-stop calibration. With `NUM_CAPTURE_POSITIONS = 7` it will be *looked up successfully* for `01`..`07` and
-  therefore fail silently rather than erroring, while applying transforms computed for a different stop layout.
-  Regenerate it for the 7-stop geometry with the `calib/` pipeline before trusting any measurement.
+  As of 2026-08-03 this points at `Data/model_0802/`, a real 7-stop calibration (`01`..`07`) produced by the
+  `calib/` pipeline against a 2026-08-02 capture (see `calib/CALIBRATION.md` and `Data/model_0802/calib_report.json`
+  for the numbers: overall RMS 0.96mm, L-R RMS 0.50mm). This replaced `Data/model_0308/cam_traj_ext.pkl`, a
+  legacy **8**-key (`01`..`08`) calibration that was a silent mismatch with `NUM_CAPTURE_POSITIONS = 7` — it
+  would look up successfully for `01`..`07` and fail silently rather than erroring, applying transforms computed
+  for a different stop layout. If `CAM_EXT_PKL`/`TRAJ_EXT_PKL` ever get pointed at a different `Data/model_*/`
+  folder, always check its key count matches `NUM_CAPTURE_POSITIONS` first.
 - `ROOT_FOLDER` — root for captured data and the SQLite database (`ROOT_FOLDER/.db/inspection.db`,
   DXF uploads under `ROOT_FOLDER/.db/dxf/`).
 
