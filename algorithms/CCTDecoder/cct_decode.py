@@ -114,11 +114,23 @@ def swap0and1(code_list):
             result.append(0)
     return result
 
-def CCT_extract(img:np.ndarray,N,color='white'):
+def CCT_extract(img:np.ndarray,N,color='white',return_all_detections=False):
+    """
+    return_all_detections=False (default, unchanged behavior): returns
+    (CodeTable, img) where CodeTable is a dict code->[x,y] -- if the same code
+    is decoded twice in one image, the dict silently keeps only the last one.
+
+    return_all_detections=True: returns (CodeTable, img, all_detections) where
+    all_detections is a list of every (code, x, y) detection including
+    duplicates -- needed by calibration code that must catch intra-image
+    duplicate decodes (a strong signal of two different physical markers
+    colliding onto the same code), which CodeTable's dict hides.
+    """
     img = img.copy()
-         
+
     #存放解码结果的list
     CodeTable={}
+    all_detections=[]
     '''
     image.shape[0], 图片垂直尺寸
     image.shape[1], 图片水平尺寸
@@ -202,6 +214,7 @@ def CCT_extract(img:np.ndarray,N,color='white'):
                 #调用解码函数进行解码
                 code=CCT_Decode(CCT_eroded,N,color)
                 CodeTable[code]=[box1[0][0],box1[0][1]]
+                all_detections.append((code,box1[0][0],box1[0][1]))
                 #将编码在原图像中绘制出来.各参数依次是：图片，添加的文字，左上角坐标，字体，字体大小，颜色，字体粗细
                 cv2.putText(img,str(code),(int(box3[0][0]-0.25*s),int(box1[0][1]+0.5*s)),cv2.FONT_HERSHEY_COMPLEX, 1, (0, 0, 255), 2)
                 #绘制拟合出的椭圆
@@ -220,6 +233,8 @@ def CCT_extract(img:np.ndarray,N,color='white'):
                 # cv2.namedWindow('img', cv2.WINDOW_NORMAL)
                 # cv2.imshow('img', img)
                 # cv2.waitKey(0)
+    if return_all_detections:
+        return CodeTable,img,all_detections
     return CodeTable,img
 
 

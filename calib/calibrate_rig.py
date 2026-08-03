@@ -70,9 +70,140 @@ Obs = namedtuple("Obs", ["pass_id", "stop", "cam", "marker_id", "xyz"])
 # two pickles, not for calib_report.json (which stays mm, for humans).
 M_TO_MM = 1000.0
 
+# The physical CCT boards' printed layout ("双目二维码61x52cm-16张.pdf"): 16
+# boards of 9 codes each, 144 unique codes total. Verified against the design
+# file -- no duplicate codes across boards. Used by _screen_detections() as a
+# structural prior: real markers always appear in dense boards of 9, so a
+# decode with no board-mates nearby, or one that contradicts its neighbors'
+# board identity, is almost certainly wrong -- confirmed by visual inspection
+# (see CALIBRATION.md) against real captures: every misdecode found either (a)
+# had zero recognizable board-member codes nearby (pure false positive on
+# background clutter, e.g. rebar/decking mistaken for a target), or (b) sat on
+# a board where 2+ of the other 8 cells decoded correctly and its own decode
+# didn't match the one remaining unclaimed code for that board.
+BOARD_LAYOUT = [
+    (479, 485, 487, 489, 491, 493, 495, 499, 501),
+    (503, 505, 507, 509, 511, 585, 587, 589, 591),
+    (595, 597, 599, 603, 605, 607, 613, 615, 619),
+    (621, 623, 627, 629, 631, 635, 637, 639, 661),
+    (663, 667, 669, 671, 679, 683, 685, 687, 691),
+    (693, 695, 699, 701, 703, 715, 717, 719, 723),
+    (725, 727, 731, 733, 735, 743, 747, 749, 751),
+    (755, 757, 759, 763, 765, 767, 819, 821, 823),
+    (827, 829, 831, 845, 847, 853, 855, 859, 861),
+    (863, 871, 875, 877, 879, 885, 887, 891, 893),
+    (895, 925, 927, 939, 941, 943, 949, 951, 955),
+    (957, 959, 975, 981, 983, 987, 989, 991, 1003),
+    (1005, 1007, 1013, 1015, 1019, 1021, 1023, 1365, 1367),
+    (1371, 1375, 1387, 1391, 1399, 1403, 1407, 1455, 1463),
+    (1467, 1471, 1495, 1499, 1503, 1519, 1527, 1531, 1535),
+    (1755, 1759, 1775, 1783, 1791, 1911, 1919, 1983, 2015),
+]
+PRINTED_CODES = frozenset(c for board in BOARD_LAYOUT for c in board)
+CODE_TO_BOARD = {c: i for i, board in enumerate(BOARD_LAYOUT) for c in board}
+assert len(PRINTED_CODES) == sum(len(b) for b in BOARD_LAYOUT), "duplicate code across boards"
+
 
 def log(msg):
     print(f"[calibrate_rig] {msg}", flush=True)
+
+
+# ======================================================================== #
+#  Decode screening: board-layout dictionary + isolation check
+# ======================================================================== #
+def _cluster_detections(detections, cluster_dist):
+    """Greedy single-link clustering of (code, x, y) detections by pixel
+    distance -- groups cells belonging to the same physical board together."""
+    n = len(detections)
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i, j):
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[ri] = rj
+
+    pts = np.array([[x, y] for _, x, y in detections], dtype=float)
+    for i in range(n):
+        for j in range(i + 1, n):
+            if np.linalg.norm(pts[i] - pts[j]) <= cluster_dist:
+                union(i, j)
+
+    clusters = defaultdict(list)
+    for i in range(n):
+        clusters[find(i)].append(i)
+    return list(clusters.values())
+
+
+def screen_detections(detections, cluster_dist=450.0, min_board_votes=2):
+    """
+    Validate/correct raw (code, x, y) CCT detections from one image against
+    the known board layout.
+
+    For each spatial cluster of detections (same physical board):
+      - if >= min_board_votes decode to codes from the SAME board, that
+        cluster is confidently identified as that board;
+      - any other detection in the cluster that decodes to a code NOT on that
+        board is either corrected (if it's the cluster's one unclaimed slot on
+        that board -- "we see 1365, 1019, 1367, so the 4th detection must be
+        1021") or dropped (if the correction would be ambiguous);
+      - clusters that never reach min_board_votes are dropped entirely -- a
+        real board always shows several markers together, so an unconfirmed
+        lone detection (whether it's a misdecode or a false positive on
+        background clutter) has no corroboration and isn't trustworthy.
+
+    Returns a filtered/corrected list of (code, x, y).
+    """
+    if not detections:
+        return []
+
+    out = []
+    n_corrected = n_dropped_ambiguous = n_dropped_no_board = 0
+    for idxs in _cluster_detections(detections, cluster_dist):
+        cluster = [detections[i] for i in idxs]
+        board_votes = defaultdict(list)   # board_id -> [(code,x,y), ...]
+        foreign = []                      # detections not on any board
+        for det in cluster:
+            code = det[0]
+            b = CODE_TO_BOARD.get(code)
+            if b is not None:
+                board_votes[b].append(det)
+            else:
+                foreign.append(det)
+
+        if not board_votes:
+            n_dropped_no_board += len(cluster)
+            continue
+
+        board_id, members = max(board_votes.items(), key=lambda kv: len(kv[1]))
+        if len(members) < min_board_votes:
+            n_dropped_no_board += len(cluster)
+            continue
+
+        out.extend(members)
+        # everything else in this cluster (foreign codes, or codes that voted
+        # for a losing/minority board) is unexplained given this board
+        unexplained = foreign + [d for b, ds in board_votes.items() if b != board_id for d in ds]
+        if not unexplained:
+            continue
+        missing = set(BOARD_LAYOUT[board_id]) - {d[0] for d in members}
+        if len(unexplained) == 1 and len(missing) == 1:
+            code, x, y = unexplained[0]
+            fixed_code = next(iter(missing))
+            out.append((fixed_code, x, y))
+            n_corrected += 1
+        else:
+            n_dropped_ambiguous += len(unexplained)
+
+    if n_corrected or n_dropped_ambiguous or n_dropped_no_board:
+        log(f"    screen: {n_corrected} corrected, {n_dropped_ambiguous} dropped "
+            f"(ambiguous), {n_dropped_no_board} dropped (no board corroboration)")
+    return out
 
 
 # ======================================================================== #
@@ -80,8 +211,10 @@ def log(msg):
 # ======================================================================== #
 def load_observations(calib_root, cct_n=12, cct_color="white"):
     """
-    Walk the pass-major tree, detect CCT markers in every image, lift each to a
-    3D point in that camera's own point cloud. Returns (obs_list, stop_names).
+    Walk the pass-major tree, detect CCT markers in every image, screen them
+    against the known board layout (screen_detections), lift each surviving
+    detection to a 3D point in that camera's own point cloud. Returns
+    (obs_list, stop_names).
 
     Requires the backend-inspection `algorithms` package (open3d, cv2, CCTDecoder)
     to be importable — added to sys.path here, not at module import time.
@@ -109,9 +242,11 @@ def load_observations(calib_root, cct_n=12, cct_color="white"):
                     log(f"  skip missing {cam_dir}")
                     continue
                 frame = MyPCD(cam_dir)
-                cct, _ = CCT_extract(frame.image, cct_n, color=cct_color)
+                _, _, raw = CCT_extract(frame.image, cct_n, color=cct_color,
+                                         return_all_detections=True)
+                screened = screen_detections(raw)
                 n_lifted = 0
-                for mid, (px, py) in cct.items():
+                for mid, px, py in screened:
                     xyz = frame.get_3dcoord_bilinear(float(px), float(py))
                     if xyz is None:
                         continue
@@ -119,7 +254,8 @@ def load_observations(calib_root, cct_n=12, cct_color="white"):
                         Obs(pass_id, stop, "L" if cam == "left" else "R",
                             int(mid), np.asarray(xyz, dtype=float) * M_TO_MM))
                     n_lifted += 1
-                log(f"  {pass_id}/{stop}/{cam}: {len(cct)} CCT, {n_lifted} lifted to 3D")
+                log(f"  {pass_id}/{stop}/{cam}: {len(raw)} raw CCT, "
+                    f"{len(screened)} after screening, {n_lifted} lifted to 3D")
 
     return obs_list, sorted(stop_names)
 
@@ -223,11 +359,24 @@ def _map_point(xyz, cam, T_s, T_lr):
 
 
 def bundle_adjust(obs_list, stop_names, ref_stop, T_lr0=None, T_stops0=None,
-                  verbose=True):
+                  verbose=True, robust_f_scale_mm=1.5):
     """
     Joint solve of T_lr and all stop poses. Global marker positions are profiled
     out analytically (residual = each mapped observation minus its group mean),
     so the only unknowns are the poses. Returns a result dict.
+
+    Uses a soft_l1 robust loss (scale = robust_f_scale_mm) rather than plain
+    least squares: screen_detections() catches most bad correspondences before
+    they get here, but it can't catch everything (e.g. a lone false-positive
+    that happens to land inside another board's cluster and get misattributed
+    to a real missing slot). A robust loss down-weights whatever residual
+    outliers slip through instead of letting a handful of them dominate the
+    cost the way plain L2 does -- the same principle as the proven
+    `filter_avg()` 1-sigma disparity trim from the sibling calibrate_lr
+    project (algorithms/utils.py), adapted from a pairwise pre-filter to an
+    in-solve robust loss since bundle_adjust's groups are n-way, not pairwise.
+    Set to None for plain least squares (e.g. to match the old, pre-robust
+    numeric behavior in tests).
     """
     stops = list(stop_names)
     if ref_stop not in stops:
@@ -271,9 +420,16 @@ def bundle_adjust(obs_list, stop_names, ref_stop, T_lr0=None, T_stops0=None,
         f"{len(p0)} params, {len(r0)} residuals; "
         f"init RMS={_rms(r0):.3f} mm")
 
+    robust_kwargs = {}
+    if robust_f_scale_mm is not None:
+        # residuals() returns flat per-axis (x,y,z) components, not per-point
+        # 3D magnitudes, so f_scale is a per-component mm threshold -- inlier
+        # groups here run ~0.3-0.6mm per axis, so 1.5mm comfortably separates
+        # them from the tens-of-mm outliers a bad correspondence produces.
+        robust_kwargs = {"loss": "soft_l1", "f_scale": robust_f_scale_mm}
     sol = least_squares(residuals, p0, method="trf",
                         xtol=1e-12, ftol=1e-12, gtol=1e-12,
-                        verbose=2 if verbose else 0)
+                        verbose=2 if verbose else 0, **robust_kwargs)
     T_lr, Ts = unpack(sol.x)
     final = residuals(sol.x)
     log(f"  BA done: final RMS={_rms(final):.3f} mm  "
