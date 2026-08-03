@@ -111,98 +111,111 @@ def log(msg):
 # ======================================================================== #
 #  Decode screening: board-layout dictionary + isolation check
 # ======================================================================== #
-def _cluster_detections(detections, cluster_dist):
-    """Greedy single-link clustering of (code, x, y) detections by pixel
-    distance -- groups cells belonging to the same physical board together."""
-    n = len(detections)
-    parent = list(range(n))
-
-    def find(i):
-        while parent[i] != i:
-            parent[i] = parent[parent[i]]
-            i = parent[i]
-        return i
-
-    def union(i, j):
-        ri, rj = find(i), find(j)
-        if ri != rj:
-            parent[ri] = rj
-
-    pts = np.array([[x, y] for _, x, y in detections], dtype=float)
-    for i in range(n):
-        for j in range(i + 1, n):
-            if np.linalg.norm(pts[i] - pts[j]) <= cluster_dist:
-                union(i, j)
-
-    clusters = defaultdict(list)
-    for i in range(n):
-        clusters[find(i)].append(i)
-    return list(clusters.values())
-
-
-def screen_detections(detections, cluster_dist=450.0, min_board_votes=2):
+def screen_detections(detections, compact_radius=500.0, correction_radius=450.0,
+                      min_board_votes=3):
     """
     Validate/correct raw (code, x, y) CCT detections from one image against
     the known board layout.
 
-    For each spatial cluster of detections (same physical board):
-      - if >= min_board_votes decode to codes from the SAME board, that
-        cluster is confidently identified as that board;
-      - any other detection in the cluster that decodes to a code NOT on that
-        board is either corrected (if it's the cluster's one unclaimed slot on
-        that board -- "we see 1365, 1019, 1367, so the 4th detection must be
-        1021") or dropped (if the correction would be ambiguous);
-      - clusters that never reach min_board_votes are dropped entirely -- a
-        real board always shows several markers together, so an unconfirmed
-        lone detection (whether it's a misdecode or a false positive on
-        background clutter) has no corroboration and isn't trustworthy.
+    Groups candidates by DECODED CODE's board identity first, not by pixel
+    proximity: measured on real captures, boards packed close together on a
+    wall can sit as little as ~90px apart while cells WITHIN one board are
+    ~150-230px apart -- gaps between boards can be *smaller* than gaps within
+    one, so no distance threshold can cluster-then-identify boards reliably.
+    (An earlier geometry-first version single-link-chained 4 separate boards
+    in one photo into one blob, whose largest code-derived board then won by
+    raw vote count even though most of its "votes" belonged to other boards
+    entirely -- see pass_09/06/left in the 2026-08-02 capture.)
+
+    For each board with >= min_board_votes candidates (after removing
+    same-code intra-image duplicates, which prove at least one copy is
+    wrong):
+      - geometric compactness is used only AFTER code-grouping, to catch a
+        detection that decoded to a code genuinely on this board but is
+        physically sitting somewhere else (a misdecode of a different,
+        possibly much closer, board's cell) -- reject any candidate farther
+        than compact_radius from the group's own median position;
+      - a board's one still-unclaimed code gets filled in from a nearby
+        (within correction_radius of the board's centroid) leftover
+        detection, if exactly one such candidate exists -- "we see
+        1365, 1019, 1367 so the nearby 4th detection must be 1021";
+      - anything left over (foreign codes, intra-image duplicates, rejected
+        outliers, ambiguous multi-candidate corrections) is dropped rather
+        than guessed.
+
+    min_board_votes=3, not 2: two independent misdecodes of unrelated cells
+    coincidentally agreeing on the same third board's code space is rare but
+    real (the pass_09/06/left case above); three agreeing is negligible,
+    while genuine boards here typically show 6-9 correctly decoded cells, so
+    raising the bar doesn't cost legitimate recognition.
 
     Returns a filtered/corrected list of (code, x, y).
     """
     if not detections:
         return []
 
-    out = []
-    n_corrected = n_dropped_ambiguous = n_dropped_no_board = 0
-    for idxs in _cluster_detections(detections, cluster_dist):
-        cluster = [detections[i] for i in idxs]
-        board_votes = defaultdict(list)   # board_id -> [(code,x,y), ...]
-        foreign = []                      # detections not on any board
-        for det in cluster:
-            code = det[0]
-            b = CODE_TO_BOARD.get(code)
-            if b is not None:
-                board_votes[b].append(det)
-            else:
-                foreign.append(det)
-
-        if not board_votes:
-            n_dropped_no_board += len(cluster)
-            continue
-
-        board_id, members = max(board_votes.items(), key=lambda kv: len(kv[1]))
-        if len(members) < min_board_votes:
-            n_dropped_no_board += len(cluster)
-            continue
-
-        out.extend(members)
-        # everything else in this cluster (foreign codes, or codes that voted
-        # for a losing/minority board) is unexplained given this board
-        unexplained = foreign + [d for b, ds in board_votes.items() if b != board_id for d in ds]
-        if not unexplained:
-            continue
-        missing = set(BOARD_LAYOUT[board_id]) - {d[0] for d in members}
-        if len(unexplained) == 1 and len(missing) == 1:
-            code, x, y = unexplained[0]
-            fixed_code = next(iter(missing))
-            out.append((fixed_code, x, y))
-            n_corrected += 1
+    board_candidates = defaultdict(list)   # board_id -> [(code,x,y), ...]
+    leftover = []                          # foreign codes + anything not yet explained
+    for det in detections:
+        b = CODE_TO_BOARD.get(det[0])
+        if b is not None:
+            board_candidates[b].append(det)
         else:
-            n_dropped_ambiguous += len(unexplained)
+            leftover.append(det)
 
-    if n_corrected or n_dropped_ambiguous or n_dropped_no_board:
-        log(f"    screen: {n_corrected} corrected, {n_dropped_ambiguous} dropped "
-            f"(ambiguous), {n_dropped_no_board} dropped (no board corroboration)")
+    confirmed_all = []
+    board_info = {}   # board_id -> (missing_codes, centroid)
+    n_too_few = n_incompact = 0
+
+    for board_id, cands in board_candidates.items():
+        by_code = defaultdict(list)
+        for det in cands:
+            by_code[det[0]].append(det)
+        singles = [dets[0] for dets in by_code.values() if len(dets) == 1]
+        dup_groups = [dets for dets in by_code.values() if len(dets) > 1]
+        leftover.extend(d for dets in dup_groups for d in dets)
+
+        if len(singles) < min_board_votes:
+            n_too_few += len(singles)
+            leftover.extend(singles)
+            continue
+
+        pts = np.array([[x, y] for _, x, y in singles])
+        med = np.median(pts, axis=0)
+        dists = np.linalg.norm(pts - med, axis=1)
+        keep = dists <= compact_radius
+        if keep.sum() < min_board_votes:
+            n_incompact += len(singles)
+            leftover.extend(singles)
+            continue
+
+        confirmed = [d for d, k in zip(singles, keep) if k]
+        leftover.extend(d for d, k in zip(singles, keep) if not k)
+        confirmed_all.extend(confirmed)
+        missing = set(BOARD_LAYOUT[board_id]) - {d[0] for d in confirmed}
+        centroid = np.median(np.array([[x, y] for _, x, y in confirmed]), axis=0)
+        board_info[board_id] = (missing, centroid)
+
+    out = list(confirmed_all)
+    n_corrected = 0
+    used = set()
+    for missing, centroid in board_info.values():
+        if len(missing) != 1:
+            continue
+        nearby = [i for i, d in enumerate(leftover)
+                  if i not in used
+                  and np.linalg.norm(np.array(d[1:], dtype=float) - centroid) <= correction_radius]
+        if len(nearby) == 1:
+            code, x, y = leftover[nearby[0]]
+            out.append((next(iter(missing)), x, y))
+            used.add(nearby[0])
+            n_corrected += 1
+
+    n_dropped = len(leftover) - len(used)
+    if n_corrected or n_dropped or n_too_few or n_incompact:
+        log(f"    screen: {n_corrected} corrected, {n_dropped} dropped "
+            f"(unresolved), {n_too_few} dropped (too few votes), "
+            f"{n_incompact} dropped (not geometrically compact)")
     return out
 
 
