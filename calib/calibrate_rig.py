@@ -686,12 +686,25 @@ def run(config):
     log(f"overall RMS {result['stats']['overall_rms_mm']:.3f} mm, "
         f"L-R RMS {result['stats']['lr_rms_mm']}")
 
-    # rail positions per captured stop (fallback to ordinal with a warning)
+    # rail positions per captured stop. capture_calib.py already computes and
+    # writes this exact dict to calib_root/capture_manifest.json from the real
+    # --n-stops/--start-pos/--end-pos used, so an explicit config value is only
+    # needed to override it -- duplicating it by hand in calib_config.json is
+    # how a stale/wrong stop_x sneaks in (a config edited for one capture, then
+    # reused as-is for a re-run with a different --n-stops or range).
     stop_x = config.get("stop_x")
     if not stop_x:
+        manifest_path = Path(calib_root) / "capture_manifest.json"
+        if manifest_path.exists():
+            with open(manifest_path, encoding="utf-8") as f:
+                manifest_stop_x = json.load(f).get("stop_x")
+            if manifest_stop_x:
+                stop_x = manifest_stop_x
+                log(f"stop_x not in config -> loaded from {manifest_path}")
+    if not stop_x:
         stop_x = {s: float(i) for i, s in enumerate(stop_names)}
-        log("WARNING: no stop_x given -> using ordinal positions; sag axis is in "
-            "'stop units', not mm. Provide stop_x for a physical sag curve.")
+        log("WARNING: no stop_x in config or capture_manifest.json -> using "
+            "ordinal positions; sag axis is in 'stop units', not mm.")
     stop_x = {k: float(v) for k, v in stop_x.items()}
 
     operational = config.get("operational_stops")
