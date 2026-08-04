@@ -114,8 +114,8 @@ class ProjectManager:
 
         self.preview_img = img
 
-        #rotate img by 90 degree anti-clockwise
-        img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        #rotate img by 90 degree clockwise
+        img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
         img = padding_img_to_ratio_3_2(img)
         cv2.imwrite(str(self.saving_path / "preview.png"), img)
         return img, transform_matrix
