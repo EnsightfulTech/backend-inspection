@@ -30,11 +30,7 @@ TRANS3 = np.array([
 ])
 
 
-def crop_static_bound(pcd):
-    min_bound = np.array([-3.5, -1.5,  2.55 ])
-    max_bound = np.array([    2,   7,  2.73  ])
-    # ic(min_bound, max_bound)
-
+def crop_static_bound(pcd, min_bound, max_bound):
     cropping_box = o3d.geometry.AxisAlignedBoundingBox(min_bound, max_bound)
     cropped_pcd = pcd.crop(cropping_box)
 
@@ -45,7 +41,7 @@ def resample_pcd(pcd, number_ratio=1/2):
     pcd_down = pcd.random_down_sample(number_ratio)
     return pcd_down
 
-def combine_frames_extrinsic(combine_folder, cam_ext_pkl, traj_ext_pkl):
+def combine_frames_extrinsic(combine_folder, cam_ext_pkl, traj_ext_pkl, crop_bounds=None):
     cam_ext = pickle.load(open(cam_ext_pkl, "rb"))
     traj_ext = pickle.load(open(traj_ext_pkl, "rb"))
     logger.info(f"loaded cam_ext and traj_ext from {cam_ext_pkl} and {traj_ext_pkl}")
@@ -84,8 +80,17 @@ def combine_frames_extrinsic(combine_folder, cam_ext_pkl, traj_ext_pkl):
     ])
     pcd_combined.transform(rt_180)
 
-    # crop static bound
-    pcd_combined = crop_static_bound(pcd_combined)
+    # crop static bound: opt-in only. The previous hardcoded bound here
+    # (z in [2.55, 2.73], an 18cm slice) was tuned for a different wall/rig
+    # setup -- on this rig it clips away nearly the entire cloud, leaving
+    # just the sliver that happens to intersect that range ("a stripe").
+    # The measurement pipeline doesn't depend on this crop being tight: it
+    # does its own adaptive re-orientation and Z-range detection from the
+    # real data (preprocess.py: extract_main_cc, cal_z_range). Pass
+    # crop_bounds=(min_bound, max_bound) once this rig's real working Z-range
+    # is known, if a tighter preview crop is wanted again.
+    if crop_bounds is not None:
+        pcd_combined = crop_static_bound(pcd_combined, *crop_bounds)
 
 
     pcd_combined = resample_pcd(pcd_combined)
