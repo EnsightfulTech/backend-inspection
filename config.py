@@ -34,8 +34,8 @@ NUM_CAPTURE_POSITIONS = 7
 
 ############################ Extrinsics configuration ############################
 # extrinsic between left and right camera AND extrinsic between each of two right capture position. 
-CAM_EXT_PKL = r"Data\model_0802\left_right_ext.pkl"
-TRAJ_EXT_PKL = r"Data\model_0802\cam_traj_ext.pkl"
+CAM_EXT_PKL = r"Data\model_0803\left_right_ext.pkl"
+TRAJ_EXT_PKL = r"Data\model_0803\cam_traj_ext.pkl"
 
 
 ############################ Frontend serving ############################

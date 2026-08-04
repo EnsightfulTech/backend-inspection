@@ -472,16 +472,37 @@ Runs `rig_geometry` unit checks and a synthetic end-to-end (known `T_lr` + known
 noisy projected marker field, multi-pass) asserting recovery within noise. Reference result on
 0.4 mm depth noise: `T_lr` err ≈ 0.004°/0.08 mm, per-stop ≤ 0.03°/1 mm, residual RMS ≈ 0.55 mm.
 
-**Real-hardware result (2026-08-02 sandbox capture, 10 passes × 7 stops)**: first attempt gave
-overall residual RMS **72.9 mm**, L-R RMS **146.3 mm** — 100-300x worse than the synthetic
-reference above, and not deployable. Root-caused (via CCT decode screening, see below) to marker
-ID collisions, not the calibration math: the loop-closure assumption itself checked out (stops
-with clean data landed at 0.3-0.6mm, matching synthetic expectations). After fixing decode
+**Real-hardware result (2026-08-02 sandbox capture, 10 passes × 7 stops, `Data/model_0802`)**: first
+attempt gave overall residual RMS **72.9 mm**, L-R RMS **146.3 mm** — 100-300x worse than the
+synthetic reference above, and not deployable. Root-caused (via CCT decode screening, see below) to
+marker ID collisions, not the calibration math: the loop-closure assumption itself checked out
+(stops with clean data landed at 0.3-0.6mm, matching synthetic expectations). After fixing decode
 screening, the same dataset gives **overall RMS 0.96 mm, L-R RMS 0.50 mm**, every stop under
 1.4mm, every pass under 1.8mm. `left_right_ext.pkl` baseline (1617.6mm, near-identity rotation)
-matches the rig's known ~1.6m camera separation. **Still need to** feed these pickles to
-`combine_frames_extrinsic` and visually confirm the L-R and inter-stop clouds overlap with no
-ghosting before pointing `config.py` at them.
+matches the rig's known ~1.6m camera separation. Fed these pickles to `combine_frames_extrinsic`
+and visually confirmed the L-R and inter-stop clouds overlap with no ghosting (continuous rebar/
+decking lines across all 7 stops; boards render as single, non-doubled shapes at full-resolution
+zoom on the stop-overlap regions) before deploying.
+
+**Follow-up (2026-08-03 rig-PC capture, 10 passes × 13 stops over the same 100-5200mm range,
+`Data/model_0803`)**: captured at 2x the rail density (425mm spacing vs. 850mm) with reshuffled
+boards, specifically so all 7 operational stops still land exactly on a captured stop (odd-numbered
+captured stops `01,03,05,...,13`) while the 6 new in-between stops densify the sag curve and give an
+independent check on the `model_0802` numbers. Gives overall RMS 3.37mm, L-R RMS 1.99mm — worse than
+`model_0802` (more images, more chances for a rare coincidental decode collision to slip past
+screening; concentrated in specific stop×pass cells, not spread evenly, and the sag curve itself
+stayed smooth across all 13 points with clean crosschecks, so this reads as leftover per-observation
+noise rather than a broken trajectory) but still far better than the raw, unscreened case. Deployed
+anyway since the RMS is acceptable and, more importantly, two numbers **reproduced independently**
+between `model_0802` and `model_0803` (different day, different board layout, different stop count):
+the L-R baseline/rotation (1617.6mm vs 1615.3mm, 213.1mm vs 211.9mm depth offset, rotation within
+0.06° on every axis) and a systematic ~0.2-0.3%-of-distance rail-travel shortfall vs the PLC-commanded
+position, present and cleanly proportional-to-distance in both runs though not at an identical
+percentage (-0.19% vs. -0.26 to -0.33%). That reproducibility is strong evidence both effects are
+real physical properties of the rig (a genuine ~210mm depth stagger between the two camera mounts;
+a real, if slightly variable, rail scale/backlash effect) rather than calibration artifacts — worth
+an independent mechanical check (tape measure on the camera mounts; the PLC's encoder-counts-per-mm
+setting) but not a reason to distrust the vision-based calibration itself.
 
 ### CCT decode screening (`screen_detections` in `calibrate_rig.py`)
 
