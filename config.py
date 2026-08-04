@@ -21,6 +21,12 @@ RUN_SIMULATION = False
 SIMULATION_DATA_DIR = r"D:\Inspection_data\20250309001"
 USE_FAKE_DATA = False
 GET_MODEL_FROM_PLC = False
+# TEMP for demo staging: after capture, always stitch + write a preview
+# (combine_pcds/convert_and_plot_pcd_result, needs only open3d) but skip the
+# CAD comparison/measurement stage (all_measurement, needs cloudComPy + a real
+# matching DXF in DXF_DIR). Set back to True once a real DXF is staged and the
+# full pipeline should run end to end.
+RUN_MEASUREMENT_PIPELINE = False
 
 
 ############################ Capture geometry ############################

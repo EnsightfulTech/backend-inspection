@@ -121,6 +121,20 @@ class ProjectManager:
         return img, transform_matrix
 
     async def run_algorithms(self):
+        # Stitching (combine_pcds/convert_and_plot_pcd_result) only needs
+        # open3d, not cloudComPy, so it runs regardless of RUN_MEASUREMENT_PIPELINE
+        # -- getting a stitched preview out doesn't require the CAD/measurement
+        # stack to be working at all.
+        pcd_combined = await self.combine_pcds()
+        await self.convert_and_plot_pcd_result(pcd_combined)
+
+        from config import RUN_MEASUREMENT_PIPELINE
+        if not RUN_MEASUREMENT_PIPELINE:
+            logger.info("RUN_MEASUREMENT_PIPELINE is False -- stitched preview "
+                        "written, skipping CAD comparison/measurement.")
+            self.postprocess_finished = True
+            return
+
         # Imported here, not at module scope: this pulls in cloudComPy, and a
         # missing/broken CloudComPy must not prevent the server from starting.
         # See the note at the top of this file.
@@ -140,9 +154,6 @@ class ProjectManager:
                 f"a DXF with exactly that filename via /uploadDxf (or place it "
                 f"directly in {self.dxf_path.parent}) before running a capture.")
 
-        pcd_combined = await self.combine_pcds()
-        await self.convert_and_plot_pcd_result(pcd_combined)
-
         # run algorithms
         pcd_path = str(self.saving_path / "pcd_combined.ply")
 
@@ -156,6 +167,11 @@ class ProjectManager:
         while not self.postprocess_finished:
             await asyncio.sleep(0.1)
 
-        path = str(self.saving_path / "img_grey_bg.png")
-        return path
+        # img_grey_bg.png only exists when the full measurement/CAD-alignment
+        # stage ran (RUN_MEASUREMENT_PIPELINE=True); with it skipped, fall back
+        # to the plain stitched-cloud preview from convert_and_plot_pcd_result.
+        cad_aligned = self.saving_path / "img_grey_bg.png"
+        if cad_aligned.exists():
+            return str(cad_aligned)
+        return str(self.saving_path / "preview.png")
 
