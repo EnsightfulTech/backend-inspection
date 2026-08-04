@@ -114,8 +114,12 @@ class ProjectManager:
 
         self.preview_img = img
 
-        #rotate img by 90 degree clockwise
-        img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+        # No rotation: convert_pcd_to_2d_image()'s raw output maps the cloud's
+        # (post TRANS1/TRANS2/rt_180) X-extent to image width, Y-extent to
+        # height. Measured on this rig's data, X-extent is ~2x Y-extent, so
+        # the raw output is already landscape, matching the CAD panel's
+        # orientation -- confirmed after two wrong guesses (CCW, then CW)
+        # both needed correcting once seen against a real result.
         img = padding_img_to_ratio_3_2(img)
         cv2.imwrite(str(self.saving_path / "preview.png"), img)
         return img, transform_matrix
