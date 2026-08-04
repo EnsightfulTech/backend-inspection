@@ -133,6 +133,13 @@ class ProjectManager:
                 f"data is saved and unaffected; check /health for status.")
             raise
 
+        if not self.dxf_path.exists():
+            raise FileNotFoundError(
+                f"DXF reference file not found: {self.dxf_path}. wall_model="
+                f"{self.wall_model!r} resolves to {self.dxf_path.name!r} -- upload "
+                f"a DXF with exactly that filename via /uploadDxf (or place it "
+                f"directly in {self.dxf_path.parent}) before running a capture.")
+
         pcd_combined = await self.combine_pcds()
         await self.convert_and_plot_pcd_result(pcd_combined)
 

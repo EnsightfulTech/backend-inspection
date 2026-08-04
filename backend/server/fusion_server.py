@@ -91,11 +91,22 @@ class FusionServerHandler:
             logger.error(f"Error in run_capture_process: {e}")
 
     async def post_process_coroutine(self):
-        await self.project_manager.run_algorithms()
-        # await self.get_printer_start_handler(None)
-        await asyncio.sleep(1)
-        logger.info("Sending refresh command to client")
-        await self.ws.send_str(json.dumps({'cmd':'refresh'}))
+        # Launched via asyncio.create_task() and never awaited by the caller, so
+        # an unhandled exception here is invisible: asyncio just logs "Task
+        # exception was never retrieved" to the console (easy to miss) and the
+        # frontend, which is waiting on the 'refresh' message below, hangs
+        # forever with no error shown. Catch and surface it both ways instead.
+        try:
+            await self.project_manager.run_algorithms()
+            # await self.get_printer_start_handler(None)
+            await asyncio.sleep(1)
+            logger.info("Sending refresh command to client")
+            await self.ws.send_str(json.dumps({'cmd':'refresh'}))
+        except Exception as e:
+            logger.error(f"post-processing failed: {e}")
+            if self.ws is not None:
+                await self.ws.send_str(json.dumps(
+                    {'cmd': 'error', 'stage': 'post_process', 'message': str(e)}))
 
     async def websocket_handler(self, request):
         """
