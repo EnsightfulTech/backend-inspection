@@ -69,6 +69,20 @@ def combine_frames_extrinsic(combine_folder, cam_ext_pkl, traj_ext_pkl, crop_bou
         pcd_combined += left_pcd.transform(rt_cam_traj)
         pcd_combined += right_pcd.transform( rt_cam_traj @ rt_lr )
 
+    # RVC captures contain NaN points for invalid-depth pixels (sensor
+    # holes/no-return). The old hardcoded crop_static_bound() below used to
+    # discard these as an accidental side effect (a bounding-box crop test is
+    # false for NaN coordinates), which masked this: get_min_bound()/
+    # get_max_bound() propagate NaN if any point is NaN, which breaks
+    # convert_pcd_to_2d_image()'s int(y_range * ...) with "cannot convert
+    # float NaN to integer" once nothing upstream filters them out anymore.
+    n_before = len(pcd_combined.points)
+    pcd_combined.remove_non_finite_points()
+    n_after = len(pcd_combined.points)
+    if n_after != n_before:
+        logger.info(f"dropped {n_before - n_after} non-finite points "
+                    f"({n_before} -> {n_after})")
+
     # transform pcd_combined by TRANS2@TRANS1
     pcd_combined.transform(TRANS2@TRANS1)
     # rotate pcd_combined around z-axis by 180 degrees
