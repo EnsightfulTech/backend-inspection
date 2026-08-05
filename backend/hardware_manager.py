@@ -52,7 +52,7 @@ class HardwareManager:
         which is what the UI's "retry connection" action does.
         """
         if RUN_SIMULATION:
-            logger.info("Running in simulation mode...")
+            logger.info("【启动】模拟模式，跳过硬件连接")
             self.plc_client = None
             self.rvc_client = None
             self.plc_error = None
@@ -69,15 +69,16 @@ class HardwareManager:
         if self.plc_error or self.camera_error:
             broken = ", ".join(x for x in ("PLC" if self.plc_error else None,
                                            "相机" if self.camera_error else None) if x)
-            logger.error(f"Hardware initialised with errors: {broken}")
+            logger.error(f"【启动】硬件初始化出错：{broken}")
             toast_info(f"硬件：{broken} 初始化失败")
         else:
-            logger.success("Hardware initialized successfully")
+            logger.success("【启动】硬件初始化完成（PLC + 相机均已连接）")
             toast_info("硬件：初始化完成")
         return self.status()
 
     def _init_plc(self):
         self.plc_error = None
+        logger.info(f"【启动】正在连接 PLC（Modbus, {PLC_HOST}:{PLC_PORT}）…")
         try:
             self.plc_client = AsyncPLCClient()
             if not self.plc_client.client.is_open:
@@ -92,13 +93,15 @@ class HardwareManager:
                 raise RuntimeError(
                     f"could not set iCameraNum to {NUM_CAPTURE_POSITIONS}; the gantry "
                     f"will not move while it is 0 (bData_Ok stays false)")
+            logger.success("【启动】PLC 已连接")
         except Exception as e:
             self.plc_error = str(e)
             self.plc_client = None
-            logger.error(f"PLC init failed: {e}")
+            logger.error(f"【启动】PLC 连接失败：{e}")
 
     def _init_cameras(self):
         self.camera_error = None
+        logger.info("【启动】正在初始化 RVC 双目相机…")
         try:
             self.rvc_client = AsyncRVCXCameras()
             if self.rvc_client.system_init() == 1:
@@ -106,10 +109,11 @@ class HardwareManager:
                     "RVC camera init failed -- check both cameras are powered and "
                     "on the GigE link, that their serials match CAM_SN_DICT, and "
                     "that Windows Firewall is off (it blocks the GigE stream)")
+            logger.success("【启动】相机已连接")
         except Exception as e:
             self.camera_error = str(e)
             self.rvc_client = None
-            logger.error(f"Camera init failed: {e}")
+            logger.error(f"【启动】相机初始化失败：{e}")
 
     # ------------------------------------------------------------------ #
     # status

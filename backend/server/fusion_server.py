@@ -44,11 +44,16 @@ class FusionServerHandler:
         logger.info('Fusion Server Handler initialized')
         logger.info(f'current step: {self.current_step}')
 
+        logger.info("【启动】正在初始化硬件管理器（PLC + 相机）…")
         self.hardware_manager = HardwareManager()
         self.project_manager = None
 
         self.current_capture_task = None
         self.post_process_task = None
+        # Set by _mount_frontend() when start_server() runs; exposed via /health
+        # so the Electron shell can catch a failed mount before opening a window
+        # that would otherwise 404.
+        self.frontend_mount = {"ok": False, "dist_dir": None, "detail": "not started yet"}
 
     async def run_capture_process(self):
         try:
@@ -514,6 +519,7 @@ class FusionServerHandler:
                 # Post-processing (measurement / CAD compare / Excel+PDF) needs
                 # CloudComPy; capture and the UI do not.
                 'cloudcompy': {'ok': cc_ok, 'error': cc_err},
+                'frontend': self.frontend_mount,
                 'storage': {
                     'root_folder': str(ROOT_FOLDER),
                     # non-null means the configured drive was missing and data is
@@ -619,32 +625,42 @@ class FusionServerHandler:
         # cannot shadow any API route above.
         self._mount_frontend(app)
 
+        logger.info("【启动】正在启动 HTTP/WebSocket 服务（端口 1337）…")
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         site = web.TCPSite(self.runner, '0.0.0.0', 1337)
         await site.start()
         logger.info(f"Server started at " + site.name)
+        logger.success("【启动】服务已启动，正在监听 1337 端口")
         return self.runner
 
     def _mount_frontend(self, app):
         """
         Mount the built frontend, if configured and present.
 
-        Missing or unbuilt is NOT an error: the backend stays usable API-only,
-        which is exactly what `npm run dev` wants (Vite serves the UI and proxies
-        here). It only logs what it did so a blank window is easy to diagnose.
+        Missing or unbuilt is NOT an error AT THE HTTP-SERVER LEVEL: the backend
+        stays usable API-only, which is exactly what `npm run dev` wants (Vite
+        serves the UI and proxies here). But for a packaged Electron build this
+        IS effectively fatal -- the Electron shell loads its window content FROM
+        this server (see the Electron repo's createWindow()), so if "/" never
+        gets registered the operator sees a bare 404 in the app window with no
+        indication why. self.frontend_mount records the outcome so /health can
+        expose it and the Electron shell can catch this BEFORE declaring the
+        splash successful and opening that doomed window.
         """
         if not FRONTEND_DIST_DIR:
-            logger.info("FRONTEND_DIST_DIR not set - serving API only")
+            msg = "FRONTEND_DIST_DIR 未设置，仅提供 API（不提供前端页面）"
+            logger.info(f"【启动】{msg}")
+            self.frontend_mount = {"ok": False, "dist_dir": None, "detail": msg}
             return
 
         dist = Path(FRONTEND_DIST_DIR)
         index = dist / "index.html"
         if not index.exists():
-            logger.warning(
-                f"FRONTEND_DIST_DIR={dist} has no index.html - serving API only. "
-                f"Run `npm run build` in the frontend checkout, or set "
-                f"FRONTEND_DIST_DIR = None to silence this.")
+            msg = (f"FRONTEND_DIST_DIR={dist} 下找不到 index.html，仅提供 API。"
+                   f"请确认前端已构建（npm run build），且该目录确实包含构建产物。")
+            logger.warning(f"【启动】{msg}")
+            self.frontend_mount = {"ok": False, "dist_dir": str(dist), "detail": msg}
             return
 
         async def serve_index(request):
@@ -659,7 +675,8 @@ class FusionServerHandler:
         # static route rather than a catch-all so unknown API paths still 404
         # instead of silently returning index.html.
         app.router.add_static("/", dist, show_index=False)
-        logger.success(f"serving frontend from {dist}")
+        logger.success(f"【启动】前端页面已挂载：{dist}")
+        self.frontend_mount = {"ok": True, "dist_dir": str(dist), "detail": None}
 
     async def stop_server(self):
         await self.runner.cleanup()

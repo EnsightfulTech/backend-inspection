@@ -16,18 +16,18 @@ from loguru import logger
 # run the server, the UI, and simulation-mode captures.
 CLOUDCOMPY_AVAILABLE = False
 CLOUDCOMPY_ERROR = None
+logger.info("【启动】正在加载 CloudComPy（点云处理库）…")
 try:
     import cloudComPy as cc
     cc.initCC()
     CLOUDCOMPY_AVAILABLE = True
-    logger.success("CloudComPy initialised")
+    logger.success("【启动】CloudComPy 加载完成")
 except Exception as e:
     CLOUDCOMPY_ERROR = str(e)
     logger.error(
-        f"CloudComPy unavailable ({e}). The server will start and capture will "
-        f"work, but post-processing (measurement, CAD comparison, Excel/PDF "
-        f"export) will fail. Check envActivation.py's CloudComPy path and that "
-        f"this interpreter is Python 3.10 x64.")
+        f"【启动】CloudComPy 加载失败（{e}）。服务仍会启动，拍照采集功能可用，"
+        f"但后处理（测量、CAD比对、Excel/PDF导出）将无法使用。请检查 "
+        f"envActivation.py 中的 CloudComPy 路径，以及当前解释器是否为 Python 3.10 x64。")
 
 from backend.async_io import AsyncIO
 from backend.server.fusion_server import FusionServerHandler
