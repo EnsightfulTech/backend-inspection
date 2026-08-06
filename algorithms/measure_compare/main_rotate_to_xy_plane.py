@@ -56,12 +56,19 @@ def rotate_to_xy_plane(cloud: cc.ccPointCloud) -> cc.ccPointCloud:
     return cloud
    
 
-if __name__ == "__main__":
-    cloud = cc.loadPointCloud("rotated_180_y.ply")
-    cloud = rotate_to_xy_plane(cloud)
-    
-    cal_z_range(cloud)
-    # ic(extracted_points)
-    # cal_z_range(extracted_points)
-    # cc.SavePointCloud(extracted_cloud, "new.ply")
-    # cc.SaveEntities([cloud], "new.ply")
+# Dead debug scaffolding, never reached via the normal import path (guarded by
+# __name__ == "__main__", and this module is only ever imported, not run
+# directly). cal_z_range() isn't even defined/imported here -- it lives in
+# preprocess.py -- so this would NameError if ever executed as-is. Commented
+# out rather than fixed because nobody currently needs it to run, and it
+# blocked Cython's stricter static analysis when compiling this module to
+# .pyd (see packaging/build_release.py).
+# if __name__ == "__main__":
+#     cloud = cc.loadPointCloud("rotated_180_y.ply")
+#     cloud = rotate_to_xy_plane(cloud)
+#
+#     cal_z_range(cloud)
+#     # ic(extracted_points)
+#     # cal_z_range(extracted_points)
+#     # cc.SavePointCloud(extracted_cloud, "new.ply")
+#     # cc.SaveEntities([cloud], "new.ply")

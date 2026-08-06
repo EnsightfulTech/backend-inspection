@@ -563,52 +563,49 @@ def extract_line(cloud, background_color):
 
     return dia_diff, k_diff
 
-if __name__ == "__main__":
-
-    # 加载cc点云
-    main_cc = cc.loadPointCloud("cropped_cloud.ply")
-    if not main_cc:
-        raise ValueError("无法读取点云文件")
-
-
-    # ic(img.shape)
-    # plt.imshow(img)
-    # plt.show()
-    
-    
-    
-    
-    
-    # convert 2d line to 3d line
-    origin_b, direction_b = model_robust_b.params
-    origin_l, direction_l = model_robust_l.params
-
-    origin_3d_b, direction_3d_b = transform_line_to_3d(origin_b, direction_b)
-    ic(direction_3d_b)
-    origin_3d_l, direction_3d_l = transform_line_to_3d(origin_l, direction_l)
-    ic(direction_3d_l)
-
-    d2_points_3d_b = transform_d2_points_to_3d(np.column_stack([line_x_b, line_robust_b]), np.linalg.inv(transform_matrix))
-    d2_points_3d_l = transform_d2_points_to_3d(np.column_stack([line_robust_l, line_y_l]), np.linalg.inv(transform_matrix))
-    ic(d2_points_3d_b)
-    ic(d2_points_3d_l)
-    # 保存3d线段和原始点云
-    poly3d_b = cc.ccPolyline(d2_points_3d_b[:, :3].tolist(), False)
-    poly3d_l = cc.ccPolyline(d2_points_3d_l[:, :3].tolist(), False)
-    poly3d_b.setName("poly3d_b")
-    poly3d_l.setName("poly3d_l")
-    cloud3d_b = poly3d_b.getAssociatedCloud()
-    cloud3d_l = poly3d_l.getAssociatedCloud()
-    poly3d_b.addChild(cloud3d_b)
-    poly3d_l.addChild(cloud3d_l)
-    # save entities
-    ret_b = cc.SaveEntities([main_cc, poly3d_b], "mixedEntities_b.bin")
-    ret_l = cc.SaveEntities([main_cc, poly3d_l], "mixedEntities_l.bin")
-
-
-    points = d3_line_calculation(origin_3d, direction_3d, 520, 530)
-    ic(points.shape)
-    ic(points[:5, :])
-
-    lamdba_x, lambda_y = reverse_calculate_lambda(d2_points_3d[0], origin_3d, direction_3d)
-    ic(lamdba_x, lambda_y)
+# Dead debug scaffolding, never reached via the normal import path (guarded by
+# __name__ == "__main__", and this module is only ever imported, not run
+# directly). Left broken since a prior refactor renamed origin_3d/direction_3d/
+# d2_points_3d to _b/_l-suffixed variants without updating this block -- it
+# would NameError if ever executed as-is. Commented out rather than fixed
+# because nobody currently needs it to run, and it blocked Cython's stricter
+# static analysis when compiling this module to .pyd (see packaging/build_release.py).
+# if __name__ == "__main__":
+#
+#     # 加载cc点云
+#     main_cc = cc.loadPointCloud("cropped_cloud.ply")
+#     if not main_cc:
+#         raise ValueError("无法读取点云文件")
+#
+#     # convert 2d line to 3d line
+#     origin_b, direction_b = model_robust_b.params
+#     origin_l, direction_l = model_robust_l.params
+#
+#     origin_3d_b, direction_3d_b = transform_line_to_3d(origin_b, direction_b)
+#     ic(direction_3d_b)
+#     origin_3d_l, direction_3d_l = transform_line_to_3d(origin_l, direction_l)
+#     ic(direction_3d_l)
+#
+#     d2_points_3d_b = transform_d2_points_to_3d(np.column_stack([line_x_b, line_robust_b]), np.linalg.inv(transform_matrix))
+#     d2_points_3d_l = transform_d2_points_to_3d(np.column_stack([line_robust_l, line_y_l]), np.linalg.inv(transform_matrix))
+#     ic(d2_points_3d_b)
+#     ic(d2_points_3d_l)
+#     # 保存3d线段和原始点云
+#     poly3d_b = cc.ccPolyline(d2_points_3d_b[:, :3].tolist(), False)
+#     poly3d_l = cc.ccPolyline(d2_points_3d_l[:, :3].tolist(), False)
+#     poly3d_b.setName("poly3d_b")
+#     poly3d_l.setName("poly3d_l")
+#     cloud3d_b = poly3d_b.getAssociatedCloud()
+#     cloud3d_l = poly3d_l.getAssociatedCloud()
+#     poly3d_b.addChild(cloud3d_b)
+#     poly3d_l.addChild(cloud3d_l)
+#     # save entities
+#     ret_b = cc.SaveEntities([main_cc, poly3d_b], "mixedEntities_b.bin")
+#     ret_l = cc.SaveEntities([main_cc, poly3d_l], "mixedEntities_l.bin")
+#
+#     points = d3_line_calculation(origin_3d, direction_3d, 520, 530)
+#     ic(points.shape)
+#     ic(points[:5, :])
+#
+#     lamdba_x, lambda_y = reverse_calculate_lambda(d2_points_3d[0], origin_3d, direction_3d)
+#     ic(lamdba_x, lambda_y)
